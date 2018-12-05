@@ -9,21 +9,20 @@ Created on Mon Oct 17 13:17:00 2016
 import logging
 import threading
 
-from . import MultiEELS
+from multi_acquire_utils import MultiEELS
 from nion.swift.model import HardwareSource
 from nion.ui import Dialog
 
+from nion.utils import Registry
 
 class MultiEELSPanelDelegate(object):
-
-
     def __init__(self, api):
         self.__api = api
         self.panel_id = 'MultiEELS-Panel'
-        self.panel_name = 'MultiEELS'
+        self.panel_name = 'MultiAcquire'
         self.panel_positions = ['left', 'right']
         self.panel_position = 'right'
-        self.api=api
+        self.api = api
         self.line_edit_widgets = {}
         self.push_button_widgets = {}
         self.label_widgets = {}
@@ -39,9 +38,9 @@ class MultiEELSPanelDelegate(object):
                         field.text = '{:g}'.format(spectrum_parameters[name])
                 
         self.MultiEELS.on_low_level_parameter_changed = low_level_parameter_changed
-        self.EELScam = self.api.get_hardware_source_by_id('andor_camera', '1')
-        self.as2 = self.api.get_instrument_by_id('autostem_controller', '1')
-        self.superscan = self.api.get_hardware_source_by_id('superscan', '1')
+        self.stem_controller = Registry.get_component('stem_controller')
+        self.EELScam = self.stem_controller.eels_camera
+        self.superscan = self.stem_controller.scan_controller
         self.settings_window_open = False
         self.parameters_window_open = False
         self.parameter_label_column = None
@@ -54,11 +53,11 @@ class MultiEELSPanelDelegate(object):
             if self.EELScam is None:
                 logging.warn('Could not get EELS camera. Spectrum acquisition will not be possible')
                 return
-            if self.as2 is None:
+            if self.stem_controller is None:
                 logging.warn('No instance of AS available.')
                 return
 
-            self.MultiEELS.as2 = self.as2
+            self.MultiEELS.as2 = self.stem_controller
             self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
             self.MultiEELS.camera = self.EELScam
             self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
@@ -74,7 +73,7 @@ class MultiEELSPanelDelegate(object):
 
         def start_si_clicked():
             self.MultiEELS.document_controller = self.document_controller
-            self.MultiEELS.as2 = self.as2
+            self.MultiEELS.as2 = self.stem_controller
             self.MultiEELS.superscan = self.superscan
             self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
             self.MultiEELS.camera = self.EELScam
