@@ -11,6 +11,7 @@ import threading
 import contextlib
 from nion.swift.model import HardwareSource
 from nion.utils import Event
+from nion.data import xdata_1_0 as xd
 import logging
 import queue
 import copy
@@ -21,14 +22,14 @@ except ImportError:
 
 class MultiEELS(object):
     def __init__(self, **kwargs):
-        self.spectrum_parameters = [{'index': 0, 'offset_x': 0, 'offset_y': 0, 'exposure_ms': 1},
-                                    {'index': 1, 'offset_x': 160, 'offset_y': 160, 'exposure_ms': 8},
-                                    {'index': 2, 'offset_x': 320, 'offset_y': 320, 'exposure_ms': 16}]
+        self.spectrum_parameters = [{'index': 0, 'offset_x': 0, 'offset_y': 0, 'exposure_ms': 1, 'frames': 1},
+                                    {'index': 1, 'offset_x': 160, 'offset_y': 160, 'exposure_ms': 8, 'frames': 1},
+                                    {'index': 2, 'offset_x': 320, 'offset_y': 320, 'exposure_ms': 16, 'frames': 1}]
         self.settings = {'x_shifter': '', 'y_shifter': 'EELS_4DY', 'x_units_per_ev': 1, 'y_units_per_px': 0.00081,
                          'blanker': '', 'x_shift_delay': 0.05, 'y_shift_delay': 0.05, 'focus': '', 'focus_delay': 0,
-                         'saturation_value': 12000, 'y_align': True}
+                         'saturation_value': 12000, 'y_align': True, 'stitch_spectra': False}
         self.on_low_level_parameter_changed = None
-        self.as2 = None
+        self.stem_controller = None
         self.camera = None
         self.superscan = None
         self.document_controller = None
@@ -86,23 +87,31 @@ class MultiEELS(object):
         self.spectrum_parameters[index]['exposure_ms'] = exposure_ms
         if callable(self.on_low_level_parameter_changed):
             self.on_low_level_parameter_changed('spectrum_parameters')
+            
+    def get_frames(self, index):
+        assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined!'.format(index)
+        return self.spectrum_parameters[index]['frames']
+
+    def set_frames(self, index, frames):
+        assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
+        self.spectrum_parameters[index]['frames'] = frames
+        if callable(self.on_low_level_parameter_changed):
+            self.on_low_level_parameter_changed('spectrum_parameters')
 
     def shift_x(self, eV):
         if callable(self.settings['x_shifter']):
             self.settings['x_shifter'](self.zeros['x'] + eV*self.settings['x_units_per_ev'])
         else:
-            self.as2.set_property_as_float(self.settings['x_shifter'],
-                                           self.zeros['x'] + eV*self.settings['x_units_per_ev'])
-
+            self.stem_controller.SetValAndConfirm(self.settings['x_shifter'],
+                                                  self.zeros['x'] + eV*self.settings['x_units_per_ev'], 1.0, 1000)
         time.sleep(self.settings['x_shift_delay'])
 
     def shift_y(self, px):
         if callable(self.settings['y_shifter']):
             self.settings['y_shifter'](self.zeros['y'] + px*self.settings['y_units_per_px'])
         else:
-            self.as2.set_property_as_float(self.settings['y_shifter'],
-                                           self.zeros['y'] + px*self.settings['y_units_per_px'])
-
+            self.stem_controller.SetValAndConfirm(self.settings['y_shifter'],
+                                                  self.zeros['y'] + px*self.settings['y_units_per_px'], 1.0, 1000)
         time.sleep(self.settings['y_shift_delay'])
 
     def adjust_focus(self, x_shift_ev):
@@ -163,35 +172,37 @@ class MultiEELS(object):
     def acquire_multi_eels(self):
         spectra = []
         if not callable(self.settings['x_shifter']):
-            self.zeros['x'] = self.as2.get_property_as_float(self.settings['x_shifter'])
+            self.zeros['x'] = self.stem_controller.GetVal(self.settings['x_shifter'])
         if not callable(self.settings['y_shifter']):
-            self.zeros['y'] = self.as2.get_property_as_float(self.settings['y_shifter'])
-
+            self.zeros['y'] = self.stem_controller.GetVal(self.settings['y_shifter'])
+        start_frame_parameters = self.camera.get_current_frame_parameters()
         for parameters in self.spectrum_parameters:
             self.shift_x(parameters['offset_x'])
             self.shift_y(parameters['offset_y'])
             self.adjust_focus(parameters['offset_x'])
-            #frame_parameters = self.camera.get_frame_parameters()
-            #frame_parameters['exposure_ms'] = parameters['exposure_ms']
-            #self.camera._hardware_source._CameraHardwareSource__camera_adapter.camera.set_exposure_ms(parameters['exposure_ms'], 'continuous')
-            frame_parameters = self.camera.get_frame_parameters()
+            frame_parameters = self.camera.get_current_frame_parameters()
             frame_parameters['exposure_ms'] =  parameters['exposure_ms']
-            self.camera.set_frame_parameters(frame_parameters)
-            im = None
-            for i in range(2):
-                im = self.camera.grab_next_to_start()[0]
-            spectra.append(im)
-            #spectra.append(self.camera.record()[0])
-        #self.camera._hardware_source._CameraHardwareSource__camera_adapter.camera.set_exposure_ms(self.spectrum_parameters[0]['exposure_ms'], 'continuous')
-        frame_parameters = self.camera.get_frame_parameters()
-        frame_parameters['exposure_ms'] =  self.spectrum_parameters[0]['exposure_ms']
-        self.camera.set_frame_parameters(frame_parameters)
+            frame_parameters['processing'] = 'sum_processor'
+            self.camera.set_current_frame_parameters(frame_parameters)
+            self.camera.start_playing()
+            self.camera.grab_next_to_start()
+            self.camera.grab_sequence_prepare(parameters['frames'])
+            xdata = self.camera.grab_sequence(parameters['frames'])[0]
+            self.camera.stop_playing()
+            if xdata.datum_dimension_count != 1:
+                spectra.append(xd.sum(xdata, axis=(0, 1)))
+            else:
+                spectra.append(xd.sum(xdata, axis=(0)))
+
+        self.camera.set_current_frame_parameters(start_frame_parameters)
         self.shift_y(0)
         self.shift_x(0)
         self.adjust_focus(0)
-        calibration = spectra[0].dimensional_calibrations[-1].write_dict()
-        crop_ranges = self.get_stitch_ranges(spectra)
-        return {'data': self.stitch_spectra(spectra, crop_ranges), 'spatial_calibrations': [calibration]}
+        if self.settings['stitch_spectra']:
+            crop_ranges = self.get_stitch_ranges(spectra)
+            return {'data': [self.stitch_spectra(spectra, crop_ranges)], 'stitched_data': True}
+        else:
+            return {'data': spectra, 'stitched_data': False}
 
     def process_and_send_data(self):
         while True:
@@ -228,9 +239,9 @@ class MultiEELS(object):
 
     def acquire_multi_eels_spectrum_image(self):
         if not callable(self.settings['x_shifter']):
-            self.zeros['x'] = self.as2.get_property_as_float(self.settings['x_shifter'])
+            self.zeros['x'] = self.stem_controller.get_property_as_float(self.settings['x_shifter'])
         if not callable(self.settings['y_shifter']):
-            self.zeros['y'] = self.as2.get_property_as_float(self.settings['y_shifter'])
+            self.zeros['y'] = self.stem_controller.get_property_as_float(self.settings['y_shifter'])
         try:
             logging.debug("start")
             self.acquisition_state_changed_event.fire({"message": "start"})

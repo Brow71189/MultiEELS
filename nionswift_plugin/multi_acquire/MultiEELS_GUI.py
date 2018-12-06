@@ -44,6 +44,29 @@ class MultiEELSPanelDelegate(object):
         self.settings_window_open = False
         self.parameters_window_open = False
         self.parameter_label_column = None
+        self.result_data_item = None
+        
+    def create_result_data_item(self, data_dict):
+        data_item = None
+        if not data_dict.get('data'):
+            data_item = self.document_controller.library.create_data_item(title='MultiEELS')
+        elif data_dict.get('stitched_data'):
+            self.document_controller.library.create_data_item_from_data_and_metadata(data_dict['data'][0],
+                                                                                          title='MultiEELS (stitched)')
+        elif not data_item.get('stitched_data'):
+            data_item = self.document_controller.library.create_data_item(title='MultiEELS (stacked)')
+            display_item = self.__api.library._document_model.get_display_item_for_data_item(data_item._data_item)
+            display_layers = []
+            for i in range(len(data_dict['data'])):
+                
+                new_data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
+                                                                                    data_dict['data'][i],
+                                                                                    title='MultiEELS #{:d}'.format(i))
+                display_item.append_display_data_channel_for_data_item(new_data_item._data_item)
+                display_layers.append({"label": str(i), "data_index": i, "fill_color": "#0F0"})
+            
+            display_item.display_layers = display_layers        
+            display_item.set_display_property("legend_position", "top-right")  
 
     def create_panel_widget(self, ui, document_controller):
         self.ui = ui
@@ -63,11 +86,9 @@ class MultiEELSPanelDelegate(object):
             self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
             self.MultiEELS.settings['x_shift_delay'] = 1
             def run_multi_eels():
-                data_element = self.MultiEELS.acquire_multi_eels()
-                data_and_metadata = HardwareSource.convert_data_element_to_data_and_metadata(data_element)
+                data_dict = self.MultiEELS.acquire_multi_eels()
                 def create_and_display_data_item():
-                    data_item = document_controller.library.create_data_item_from_data_and_metadata(data_and_metadata)
-                    document_controller.display_data_item(data_item)
+                    self.create_result_data_item(data_dict)
                 document_controller.queue_task(create_and_display_data_item)  # must occur on UI thread
             threading.Thread(target=run_multi_eels).start()
 
@@ -110,6 +131,8 @@ class MultiEELSPanelDelegate(object):
         parameter_description_row.add(ui.create_label_widget('Y Offset (px)'))
         parameter_description_row.add_spacing(5)
         parameter_description_row.add(ui.create_label_widget('Exposure (ms)'))
+        parameter_description_row.add_spacing(5)
+        parameter_description_row.add(ui.create_label_widget('Frames'))
         parameter_description_row.add_spacing(5)
         
         settings_row = ui.create_row_widget()
@@ -160,11 +183,13 @@ class MultiEELSPanelDelegate(object):
         offset_x = self.ui.create_label_widget('{:g}'.format(spectrum_parameters['offset_x']))
         offset_y = self.ui.create_label_widget('{:g}'.format(spectrum_parameters['offset_y']))
         exposure_ms = self.ui.create_label_widget('{:g}'.format(spectrum_parameters['exposure_ms']))
+        frames = self.ui.create_label_widget('{:.0f}'.format(spectrum_parameters['frames']))
         
         widgets['index'] = index
         widgets['offset_x'] = offset_x
         widgets['offset_y'] = offset_y
         widgets['exposure_ms'] = exposure_ms
+        widgets['frames'] = frames
 
         row.add_spacing(5)
         row.add(index)
@@ -174,6 +199,8 @@ class MultiEELSPanelDelegate(object):
         row.add(offset_y)
         row.add_spacing(10)
         row.add(exposure_ms)
+        row.add_spacing(10)
+        row.add(frames)
         row.add_spacing(5)    
         
         self.label_widgets[spectrum_parameters['index']] = widgets
@@ -199,6 +226,8 @@ class MultiEELSPanelDelegate(object):
         descriptor_column.add_spacing(8)
         descriptor_column.add(self.ui.create_label_widget('Exposure (ms):'))
         descriptor_column.add_spacing(8)
+        descriptor_column.add(self.ui.create_label_widget('Frames:'))
+        descriptor_column.add_spacing(8)
         descriptor_column.add_stretch()
 
         spectrum_no = self.ui.create_label_widget(str(spectrum_parameters['index']))
@@ -217,6 +246,11 @@ class MultiEELSPanelDelegate(object):
         exposure_ms.text = str(spectrum_parameters['exposure_ms'])
         exposure_ms.on_editing_finished = lambda text: self.MultiEELS.set_exposure_ms(spectrum_parameters['index'], float(text))
         widgets['exposure_ms'] = exposure_ms
+        
+        frames = self.ui.create_line_edit_widget()
+        frames.text = str(spectrum_parameters['frames'])
+        frames.on_editing_finished = lambda text: self.MultiEELS.set_frames(spectrum_parameters['index'], int(text))
+        widgets['frames'] = frames
 
         value_column.add_spacing(5)
         value_column.add(spectrum_no)
@@ -226,6 +260,8 @@ class MultiEELSPanelDelegate(object):
         value_column.add(offset_y)
         value_column.add_spacing(1)
         value_column.add(exposure_ms)
+        value_column.add_spacing(1)
+        value_column.add(frames)
         value_column.add_stretch()
 
         row.add_spacing(5)
@@ -245,10 +281,10 @@ class MultiEELSPanelDelegate(object):
     def show_config_box(self):
         dc = self.document_controller._document_controller
 
-        class ConfigDialog(Dialog.OkCancelDialog):
+        class ConfigDialog(Dialog.ActionDialog):
 
             def __init__(self, ui, MultiEELSGUI):
-                super(ConfigDialog, self).__init__(ui, include_cancel=False)
+                super(ConfigDialog, self).__init__(ui)
                 def report_window_close():
                     MultiEELSGUI.settings_window_open = False
                 self.on_accept = report_window_close
@@ -374,16 +410,21 @@ class MultiEELSPanelDelegate(object):
                 y_shift_strength_field.on_editing_finished = y_shift_strength_finished
                 x_shift_delay_field.on_editing_finished = x_shift_delay_finished
                 y_shift_delay_field.on_editing_finished = y_shift_delay_finished
+                
+            def about_to_close(self, geometry: str, state: str) -> None:
+                if self.on_reject:
+                    self.on_reject()
+                super().about_to_close(geometry, state)
 
         ConfigDialog(dc.ui, self).show()
 
     def show_change_parameters_box(self):
         dc = self.document_controller._document_controller
 
-        class ConfigDialog(Dialog.OkCancelDialog):
+        class ConfigDialog(Dialog.ActionDialog):
 
             def __init__(self, ui, MultiEELSGUI):
-                super(ConfigDialog, self).__init__(ui, include_cancel=False)
+                super(ConfigDialog, self).__init__(ui)
                 def report_window_close():
                     MultiEELSGUI.parameters_window_open = False
                 self.on_accept = report_window_close
@@ -420,11 +461,16 @@ class MultiEELSPanelDelegate(object):
                 self.content.add_spacing(5)
                 self.content.add(row)
                 self.content.add_spacing(10)
+            
+            def about_to_close(self, geometry: str, state: str) -> None:
+                if self.on_reject:
+                    self.on_reject()
+                super().about_to_close(geometry, state)
 
         ConfigDialog(dc.ui, self).show()
 
 class MultiEELSExtension(object):
-    extension_id = 'univie.multieels'
+    extension_id = 'nion.extension.multiacquire'
 
     def __init__(self, api_broker):
         api = api_broker.get_api(version='1', ui_version='1')
