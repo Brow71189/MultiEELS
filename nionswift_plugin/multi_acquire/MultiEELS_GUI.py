@@ -8,14 +8,19 @@ Created on Mon Oct 17 13:17:00 2016
 # standard libraries
 import logging
 import threading
+from queue import Empty
 
 from multi_acquire_utils import MultiEELS
 from nion.swift.model import HardwareSource
 from nion.ui import Dialog
-
 from nion.utils import Registry
+from nion.data import xdata_1_0 as xd
+from nion.data import Calibration
+
+from multi_acquire_utils import ColorCycle
 
 class MultiEELSPanelDelegate(object):
+    
     def __init__(self, api):
         self.__api = api
         self.panel_id = 'MultiEELS-Panel'
@@ -36,71 +41,138 @@ class MultiEELSPanelDelegate(object):
                 for spectrum_parameters in self.MultiEELS.spectrum_parameters:
                     for name, field in self.label_widgets[spectrum_parameters['index']].items():
                         field.text = '{:g}'.format(spectrum_parameters[name])
-                
         self.MultiEELS.on_low_level_parameter_changed = low_level_parameter_changed
-        self.stem_controller = Registry.get_component('stem_controller')
-        self.EELScam = self.stem_controller.eels_camera
-        self.superscan = self.stem_controller.scan_controller
+        self.__acquisition_state_changed_event_listener = self.MultiEELS.acquisition_state_changed_event.listen(self.acquisition_state_changed)
+        self.__new_data_ready_event_listener = self.MultiEELS.new_data_ready_event.listen(self.update_result)
+        self.stem_controller = None
+        self.EELScam = None
+        self.superscan = None
         self.settings_window_open = False
         self.parameters_window_open = False
         self.parameter_label_column = None
-        self.result_data_item = None
+        self.result_data_items = None
+        self.__acquisition_running = False
         
     def create_result_data_item(self, data_dict):
-        data_item = None
-        if not data_dict.get('data'):
-            data_item = self.document_controller.library.create_data_item(title='MultiEELS')
-        elif data_dict.get('stitched_data'):
-            self.document_controller.library.create_data_item_from_data_and_metadata(data_dict['data'][0],
+        if data_dict.get('stitched_data'):
+            data_item = self.document_controller.library.create_data_item_from_data_and_metadata(data_dict['data'][0],
                                                                                           title='MultiEELS (stitched)')
-        elif not data_item.get('stitched_data'):
-            data_item = self.document_controller.library.create_data_item(title='MultiEELS (stacked)')
-            display_item = self.__api.library._document_model.get_display_item_for_data_item(data_item._data_item)
+            metadata = data_item.metadata
+            metadata['MultiEELS'] = data_dict['parameters']
+            data_item.set_metadata(metadata)
+        elif not data_dict.get('stitched_data'):
             display_layers = []
+            ColorCycle.reset_color_cycle()
             for i in range(len(data_dict['data'])):
-                
-                new_data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
-                                                                                    data_dict['data'][i],
-                                                                                    title='MultiEELS #{:d}'.format(i))
+                index = data_dict['parameters'][i]['index']
+                if i == 0:
+                    data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
+                                                                                        data_dict['data'][i],
+                                                                                        title='MultiEELS (stacked)')
+                    display_item = self.__api.library._document_model.get_display_item_for_data_item(data_item._data_item)
+                    new_data_item = data_item
+                else:
+                    new_data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
+                                                                                data_dict['data'][i],
+                                                                                title='MultiEELS #{:d}'.format(index))
+                metadata = new_data_item.metadata
+                metadata['MultiEELS'] = data_dict['parameters'][i]
+                new_data_item.set_metadata(metadata)
                 display_item.append_display_data_channel_for_data_item(new_data_item._data_item)
-                display_layers.append({"label": str(i), "data_index": i, "fill_color": "#0F0"})
+                start_ev = data_dict['parameters'][i]['start_ev']
+                end_ev = data_dict['parameters'][i]['end_ev']
+                display_layers.append({'label': '#{:d}: {:g}-{:2g} eV'.format(index, start_ev, end_ev),
+                                       'data_index': i,
+                                       'fill_color': ColorCycle.get_next_color()})
             
             display_item.display_layers = display_layers        
-            display_item.set_display_property("legend_position", "top-right")  
+            display_item.set_display_property("legend_position", "top-right")
+            display_item.title = 'MultiEELS (stacked)'
+    
+    def acquisition_state_changed(self, info_dict):
+        if info_dict.get('message') == 'start':
+            self.__acquisition_running = True
+            def update_button():
+                self.start_si_button.text = 'Abort MultiEELS spectrum image'
+            self.__api.queue_task(update_button)
+        elif info_dict.get('message') == 'end':
+            self.__acquisition_running = False
+            def update_button():
+                self.start_si_button.text = 'Start MultiEELS spectrum image'
+            self.__api.queue_task(update_button)
+    
+    def update_result(self, data_dict):
+        print('got from disp queue')
+        def create_or_update_data_items():
+            if not self.result_data_items:
+                print('here')
+                self.result_data_items = []
+                for i in range(len(data_dict['data'])):
+                    if data_dict.get('stitched_data'):
+                        new_data_item = self.__api.library.create_data_item(title='MultiEELS (stitched)')
+                    else:
+                        parms = data_dict['parameters'][i]
+                        new_data_item = self.__api.library.create_data_item(
+                                                         title='MultiEELS #{:d}'.format(parms['index']))
+                    xdata = data_dict['data'][i]
+                    new_xdata = xd.reshape(xdata, (-1,) + xdata.data_shape)
+                    dimensional_calibrations = new_xdata.dimensional_calibrations
+                    dimensional_calibrations[0] = Calibration.Calibration(**self.MultiEELS.scan_calibrations[0])
+                    new_data_item.set_data_and_metadata(new_xdata)
+                    metadata = new_data_item.metadata
+                    if data_dict.get('stitched_data'):
+                        metadata['MultiEELS'] = data_dict['parameters']
+                    else:
+                        metadata['MultiEELS'] = data_dict['parameters'][i]
+                    new_data_item.set_metadata(metadata)
+                    self.result_data_items.append(new_data_item)
+            else:
+                print('here2')
+                data = data_dict['data']
+                for i in range(len(data)):
+                    print(self.result_data_items[i].xdata.data_shape)
+                    print(xd.reshape(data[i], (-1,) + data[i].data_shape).data_shape)
+                    new_xdata = xd.concatenate([self.result_data_items[i].xdata,
+                                                xd.reshape(data[i], (-1,) + data[i].data_shape)], axis=0)
+                    self.result_data_items[i].set_data_and_metadata(new_xdata)
+            print('finished disply')
+        self.__api.queue_task(create_or_update_data_items)
 
     def create_panel_widget(self, ui, document_controller):
         self.ui = ui
         self.document_controller = document_controller
 
         def start_clicked():
-            if self.EELScam is None:
-                logging.warn('Could not get EELS camera. Spectrum acquisition will not be possible')
-                return
-            if self.stem_controller is None:
-                logging.warn('No instance of AS available.')
-                return
-
-            self.MultiEELS.as2 = self.stem_controller
-            self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
+            self.stem_controller = Registry.get_component('stem_controller')
+            self.EELScam = self.stem_controller.eels_camera
+            self.superscan = self.stem_controller.scan_controller
+            self.MultiEELS.stem_controller = self.stem_controller
+            #self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
             self.MultiEELS.camera = self.EELScam
-            self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
+            #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
             self.MultiEELS.settings['x_shift_delay'] = 1
             def run_multi_eels():
-                data_dict = self.MultiEELS.acquire_multi_eels()
+                data_dict = self.MultiEELS.acquire_multi_eels_spectrum()
                 def create_and_display_data_item():
                     self.create_result_data_item(data_dict)
                 document_controller.queue_task(create_and_display_data_item)  # must occur on UI thread
             threading.Thread(target=run_multi_eels).start()
 
         def start_si_clicked():
-            self.MultiEELS.document_controller = self.document_controller
-            self.MultiEELS.as2 = self.stem_controller
-            self.MultiEELS.superscan = self.superscan
-            self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
-            self.MultiEELS.camera = self.EELScam
-            self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
-            self.MultiEELS.settings['x_shift_delay'] = 0.3
-            threading.Thread(target=self.MultiEELS.acquire_multi_eels_spectrum_image).start()
+            if self.__acquisition_running:
+                self.MultiEELS.abort_event.set()
+            else:
+                self.stem_controller = Registry.get_component('stem_controller')
+                self.EELScam = self.stem_controller.eels_camera
+                self.superscan = self.stem_controller.scan_controller
+                self.MultiEELS.stem_controller = self.stem_controller
+                #self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
+                self.MultiEELS.camera = self.EELScam
+                self.MultiEELS.superscan = self.superscan
+                #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
+                self.MultiEELS.settings['x_shift_delay'] = 1
+                self.result_data_items = None
+                threading.Thread(target=self.MultiEELS.acquire_multi_eels_spectrum_image).start()            
         
         def settings_button_clicked():
             if not self.settings_window_open:
@@ -143,15 +215,15 @@ class MultiEELSPanelDelegate(object):
         settings_row.add(settings_button)
         settings_row.add_spacing(20)
         
-        start_button = ui.create_push_button_widget('Start MultiEELS')
-        start_button.on_clicked = start_clicked
-        start_si_button = ui.create_push_button_widget('Start MultiEELS spectrum image')
-        start_si_button.on_clicked = start_si_clicked
+        self.start_button = ui.create_push_button_widget('Start MultiEELS')
+        self.start_button.on_clicked = start_clicked
+        self.start_si_button = ui.create_push_button_widget('Start MultiEELS spectrum image')
+        self.start_si_button.on_clicked = start_si_clicked
         start_row = ui.create_row_widget()
         start_row.add_spacing(5)
-        start_row.add(start_button)
+        start_row.add(self.start_button)
         start_row.add_spacing(15)
-        start_row.add(start_si_button)
+        start_row.add(self.start_si_button)
         start_row.add_spacing(5)
         start_row.add_stretch()
 
@@ -219,15 +291,15 @@ class MultiEELSPanelDelegate(object):
 
         descriptor_column.add_spacing(5)
         descriptor_column.add(self.ui.create_label_widget('Spectrum #:'))
-        descriptor_column.add_spacing(8)
+        descriptor_column.add_spacing(5)
         descriptor_column.add(self.ui.create_label_widget('X offset (eV):'))
-        descriptor_column.add_spacing(8)
+        descriptor_column.add_spacing(5)
         descriptor_column.add(self.ui.create_label_widget('Y offset (px):'))
-        descriptor_column.add_spacing(8)
+        descriptor_column.add_spacing(5)
         descriptor_column.add(self.ui.create_label_widget('Exposure (ms):'))
-        descriptor_column.add_spacing(8)
+        descriptor_column.add_spacing(5)
         descriptor_column.add(self.ui.create_label_widget('Frames:'))
-        descriptor_column.add_spacing(8)
+        descriptor_column.add_spacing(5)
         descriptor_column.add_stretch()
 
         spectrum_no = self.ui.create_label_widget(str(spectrum_parameters['index']))
@@ -333,6 +405,12 @@ class MultiEELSPanelDelegate(object):
                 def align_y_checkbox_changed(check_state):
                     MultiEELSGUI.MultiEELS.settings['y_align'] = check_state == 'checked'
                     
+                def auto_dark_subtract_checkbox_changed(check_state):
+                    MultiEELSGUI.MultiEELS.settings['auto_dark_subtract'] = check_state == 'checked'
+                    
+                def bin_1D_checkbox_changed(check_state):
+                    MultiEELSGUI.MultiEELS.settings['bin_spectra'] = check_state == 'checked'
+                    
                 def saturation_value_finished(text):
                     try:
                         newvalue = float(text)
@@ -342,12 +420,12 @@ class MultiEELSPanelDelegate(object):
                         MultiEELSGUI.MultiEELS.settings['saturation_value'] = newvalue
                     finally:
                         saturation_value_field.text = '{:g}'.format(MultiEELSGUI.MultiEELS.settings['saturation_value'])
-                    
 
                 column = self.ui.create_column_widget()                
                 row1 = self.ui.create_row_widget()
                 row2 = self.ui.create_row_widget()
                 row3 = self.ui.create_row_widget()
+                row4 = self.ui.create_row_widget()
                 
                 x_shift_strength_label = self.ui.create_label_widget('X shifter strength (units/ev): ')
                 x_shift_strength_field = self.ui.create_line_edit_widget()
@@ -358,6 +436,8 @@ class MultiEELSPanelDelegate(object):
                 y_shift_delay_label = self.ui.create_label_widget('Y shifter delay (s): ')
                 y_shift_delay_field = self.ui.create_line_edit_widget()
                 align_y_checkbox = self.ui.create_check_box_widget('Y-align spectra ')
+                auto_dark_subtract_checkbox = self.ui.create_check_box_widget('Auto dark subtraction ')
+                bin_1D_checkbox = self.ui.create_check_box_widget('Bin data in y direction ')
                 saturation_value_label = self.ui.create_label_widget('Camera saturation value: ')
                 saturation_value_field = self.ui.create_line_edit_widget()
                 
@@ -382,16 +462,25 @@ class MultiEELSPanelDelegate(object):
                 row3.add_spacing(5)
                 row3.add(align_y_checkbox)
                 row3.add_spacing(20)
-                row3.add(saturation_value_label)
-                row3.add(saturation_value_field)
+                row3.add(auto_dark_subtract_checkbox)
                 row3.add_spacing(5)
                 row3.add_stretch()
+                
+                row4.add_spacing(5)
+                row4.add(bin_1D_checkbox)
+                row4.add_spacing(20)
+                row4.add(saturation_value_label)
+                row4.add(saturation_value_field)
+                row4.add_spacing(5)
+                row4.add_stretch()
                 
                 column.add(row1)
                 column.add_spacing(5)
                 column.add(row2)
                 column.add_spacing(5)
                 column.add(row3)
+                column.add_spacing(5)
+                column.add(row4)
                 column.add_stretch()
                 
                 self.content.add_spacing(5)
@@ -399,6 +488,8 @@ class MultiEELSPanelDelegate(object):
                 self.content.add_spacing(5)
                 
                 align_y_checkbox.checked = MultiEELSGUI.MultiEELS.settings['y_align']
+                auto_dark_subtract_checkbox.checked = MultiEELSGUI.MultiEELS.settings['auto_dark_subtract']
+                bin_1D_checkbox.checked = MultiEELSGUI.MultiEELS.settings['bin_spectra']
                 x_shift_strength_finished('')
                 y_shift_strength_finished('')
                 x_shift_delay_finished('')
@@ -406,6 +497,8 @@ class MultiEELSPanelDelegate(object):
                 saturation_value_finished('')
                 
                 align_y_checkbox.on_check_state_changed = align_y_checkbox_changed
+                auto_dark_subtract_checkbox.on_check_state_changed = auto_dark_subtract_checkbox_changed
+                bin_1D_checkbox.on_check_state_changed = bin_1D_checkbox_changed
                 x_shift_strength_field.on_editing_finished = x_shift_strength_finished
                 y_shift_strength_field.on_editing_finished = y_shift_strength_finished
                 x_shift_delay_field.on_editing_finished = x_shift_delay_finished
