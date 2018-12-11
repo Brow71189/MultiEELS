@@ -31,10 +31,11 @@ class MultiEELS(object):
         self.spectrum_parameters = [{'index': 0, 'offset_x': 0, 'offset_y': 0, 'exposure_ms': 1, 'frames': 1},
                                     {'index': 1, 'offset_x': 160, 'offset_y': 160, 'exposure_ms': 8, 'frames': 1},
                                     {'index': 2, 'offset_x': 320, 'offset_y': 320, 'exposure_ms': 16, 'frames': 1}]
-        self.settings = {'x_shifter': 'EELS_MagneticShift_Offset', 'y_shifter': '', 'x_units_per_ev': 1, 'y_units_per_px': 0.00081,
-                         'blanker': '', 'x_shift_delay': 0.05, 'y_shift_delay': 0.05, 'focus': '', 'focus_delay': 0,
-                         'saturation_value': 12000, 'y_align': True, 'stitch_spectra': False,
-                         'auto_dark_subtract': False, 'bin_spectra': True}
+        self.settings = {'x_shifter': 'EELS_MagneticShift_Offset', 'y_shifter': '', 'x_units_per_ev': 1,
+                         'y_units_per_px': 0.00081, 'blanker': '', 'x_shift_delay': 0.05, 'y_shift_delay': 0.05,
+                         'focus': '', 'focus_delay': 0, 'saturation_value': 12000, 'y_align': True,
+                         'stitch_spectra': False, 'auto_dark_subtract': False, 'bin_spectra': True,
+                         'blanker_delay': 0.05}
         self.on_low_level_parameter_changed = None
         self.stem_controller = None
         self.camera = None
@@ -100,7 +101,7 @@ class MultiEELS(object):
         self.spectrum_parameters[index]['exposure_ms'] = exposure_ms
         if callable(self.on_low_level_parameter_changed):
             self.on_low_level_parameter_changed('spectrum_parameters')
-            
+
     def get_frames(self, index):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined!'.format(index)
         return self.spectrum_parameters[index]['frames']
@@ -130,11 +131,18 @@ class MultiEELS(object):
     def adjust_focus(self, x_shift_ev):
         pass
 
-    def blank_beam(self, time=None):
-        pass
+    def blank_beam(self):
+        self.__set_beam_blanker(True)
 
-    def unblank_beam(self, time=None):
-        pass
+    def unblank_beam(self):
+        self.__set_beam_blanker(False)
+
+    def __set_beam_blanker(self, blanker_on):
+        if callable(self.__active_settings['blanker']):
+            self.__active_settings['blanker'](blanker_on)
+        elif self.__active_settings['blanker']:
+            self.stem_controller.SetValAndConfirm(self.__active_settings['blanker'], 1 if blanker_on else 0, 1.0, 1000)
+        time.sleep(self.__active_settings['blanker_delay'])
 
     def get_stitch_ranges(self, spectra):
         #result = np.array(())
@@ -181,7 +189,7 @@ class MultiEELS(object):
             result[crop_ranges[i][2][0]:crop_ranges[i][2][1]] = data[crop_ranges[i][1][0]:crop_ranges[i][1][1]]
 
         return result
-    
+
     def __acquire_multi_eels_data(self, number_pixels):
         spectra = []
         parameters_list = []
@@ -199,12 +207,22 @@ class MultiEELS(object):
             #self.camera.grab_next_to_start()
             self.camera.grab_sequence_prepare(parameters['frames']*number_pixels)
             print('start sequence')
-            xdata = self.camera.grab_sequence(parameters['frames']*number_pixels)[0]
+            success = False
+            while not success:
+                try:
+                    xdata = self.camera.grab_sequence(parameters['frames']*number_pixels)[0]
+                except Exception as e:
+                    if str(e) == 'No simulator thread.':
+                        success = False
+                    else:
+                        raise
+                else:
+                    success = True
             print('end sequence')
             starttime = time.time()
             if self.__active_settings['bin_spectra'] and xdata.datum_dimension_count != 1:
                     xdata = xd.sum(xdata, axis=1)
-            
+
             # bring data to universal shape: ('pixels', 'frames', 'data', 'data')
             xdata = xd.reshape(xdata, (number_pixels, -1) + (xdata.data_shape[1:]))
             # sum along frames axis
@@ -214,7 +232,7 @@ class MultiEELS(object):
                                                              1 if self.__active_settings['bin_spectra'] else 2)
             xdata._set_data_descriptor(data_descriptor)
             spectra.append(xdata)
-            
+
             end_ev = parameters['offset_x'] + (spectra[-1].dimensional_calibrations[-1].scale *
                                                spectra[-1].data_shape[-1])
             parms = {'index': parameters['index'],
@@ -223,7 +241,7 @@ class MultiEELS(object):
                      'start_ev': parameters['offset_x'],
                      'end_ev': end_ev}
             parameters_list.append(parms)
-            print('finished acquisirton ({:g} s)'.format(time.time() - starttime))
+            print('finished acquisition ({:g} s)'.format(time.time() - starttime))
         return {'data': spectra, 'parameters': parameters_list}
 
     def acquire_multi_eels_spectrum(self):
@@ -236,6 +254,12 @@ class MultiEELS(object):
             self.zeros['y'] = self.stem_controller.GetVal(self.__active_settings['y_shifter'])
         start_frame_parameters = self.camera.get_current_frame_parameters()
         multi_eels_data = self.__acquire_multi_eels_data(1)
+        if self.__active_settings['auto_dark_subtract']:
+            self.blank_beam()
+            dark_data = self.__acquire_multi_eels_data(1)
+            for i in range(len(multi_eels_data['data'])):
+                multi_eels_data['data'][i] = multi_eels_data['data'][i] - dark_data['data'][i]
+            self.unblank_beam()
         self.camera.set_current_frame_parameters(start_frame_parameters)
         self.shift_y(0)
         self.shift_x(0)
@@ -252,7 +276,7 @@ class MultiEELS(object):
                 data_list[i] = xd.squeeze(data_list[i])
             multi_eels_data['data'] = data_list
             return multi_eels_data
-    
+
     def acquire_multi_eels_line(self, x_pixels, flyback_pixels=2, first_line=False, last_line=False):
         data_dict = self.__acquire_multi_eels_data(x_pixels+flyback_pixels)
         for i in range(len(data_dict['data'])):
@@ -298,6 +322,8 @@ class MultiEELS(object):
                 raise NotImplementedError
             else:
                 images['line_number'] = line_number
+                if hasattr(self, 'number_lines') and line_number == self.number_lines:
+                    images['is_last_line'] = True
                 self.new_data_ready_event.fire(images)
                 print('processed line')
 #            if self.data_item.data is None:
@@ -380,6 +406,7 @@ class MultiEELS(object):
 #                        self.document_controller.display_data_item(data_item)
 #                    self.document_controller.queue_task(create_and_display_data_item)  # must occur on UI thread
         except Exception as e:
+            self.acquisition_state_changed_event.fire({"message": "exception", "content": str(e)})
             import traceback
             traceback.print_stack()
             print(e)
