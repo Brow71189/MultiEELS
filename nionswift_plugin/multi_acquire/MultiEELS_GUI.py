@@ -64,9 +64,10 @@ class MultiEELSPanelDelegate(object):
         elif not data_dict.get('stitched_data'):
             display_layers = []
             ColorCycle.reset_color_cycle()
+            display_item = None
             for i in range(len(data_dict['data'])):
                 index = data_dict['parameters'][i]['index']
-                if i == 0:
+                if i == 0 and data_dict['data'][i].is_data_1D:
                     data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
                                                                                         data_dict['data'][i],
                                                                                         title='MultiEELS (stacked)')
@@ -79,16 +80,17 @@ class MultiEELSPanelDelegate(object):
                 metadata = new_data_item.metadata
                 metadata['MultiEELS'] = data_dict['parameters'][i]
                 new_data_item.set_metadata(metadata)
-                display_item.append_display_data_channel_for_data_item(new_data_item._data_item)
-                start_ev = data_dict['parameters'][i]['start_ev']
-                end_ev = data_dict['parameters'][i]['end_ev']
-                display_layers.append({'label': '#{:d}: {:g}-{:2g} eV'.format(index, start_ev, end_ev),
-                                       'data_index': i,
-                                       'fill_color': ColorCycle.get_next_color()})
-
-            display_item.display_layers = display_layers
-            display_item.set_display_property("legend_position", "top-right")
-            display_item.title = 'MultiEELS (stacked)'
+                if display_item:
+                    display_item.append_display_data_channel_for_data_item(new_data_item._data_item)
+                    start_ev = data_dict['parameters'][i]['start_ev']
+                    end_ev = data_dict['parameters'][i]['end_ev']
+                    display_layers.append({'label': '#{:d}: {:g}-{:2g} eV'.format(index, start_ev, end_ev),
+                                           'data_index': i,
+                                           'fill_color': ColorCycle.get_next_color()})
+            if display_item:
+                display_item.display_layers = display_layers
+                display_item.set_display_property("legend_position", "top-right")
+                display_item.title = 'MultiEELS (stacked)'
 
     def acquisition_state_changed(self, info_dict):
         if info_dict.get('message') == 'start':
@@ -107,10 +109,6 @@ class MultiEELSPanelDelegate(object):
     def __close_data_item_refs(self):
         for item_ref in self.__result_data_items_refs:
                 item_ref.__exit__(None, None, None)
-                try:
-                    item_ref._DataRef__data_item._data_item.decrement_data_ref_count()
-                except Exception as e:
-                    print(e)
         self.__result_data_items_refs = []
         self.result_data_items = []
 
@@ -173,7 +171,7 @@ class MultiEELSPanelDelegate(object):
                 def create_and_display_data_item():
                     self.create_result_data_item(data_dict)
                 document_controller.queue_task(create_and_display_data_item)  # must occur on UI thread
-            threading.Thread(target=run_multi_eels).start()
+            threading.Thread(target=run_multi_eels, daemon=True).start()
 
         def start_si_clicked():
             if self.__acquisition_running:
@@ -189,7 +187,7 @@ class MultiEELSPanelDelegate(object):
                 #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
                 #self.MultiEELS.settings['x_shift_delay'] = 1
                 self.__close_data_item_refs()
-                threading.Thread(target=self.MultiEELS.acquire_multi_eels_spectrum_image).start()
+                threading.Thread(target=self.MultiEELS.acquire_multi_eels_spectrum_image, daemon=True).start()
 
         def settings_button_clicked():
             if not self.settings_window_open:
