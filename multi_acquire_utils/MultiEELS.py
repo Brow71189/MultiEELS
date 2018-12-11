@@ -15,6 +15,7 @@ from nion.data import xdata_1_0 as xd
 from nion.data import DataAndMetadata
 from nion.data import Calibration
 from nion.instrumentation.scan_base import RecordTask
+from nion.swift.model import ImportExportManager
 import logging
 import queue
 import copy
@@ -210,7 +211,15 @@ class MultiEELS(object):
             success = False
             while not success:
                 try:
-                    xdata = self.camera.grab_sequence(parameters['frames']*number_pixels)[0]
+                    frames = self.acquire_sequence(count)
+                    xdatas = list()
+                    for data_element in frames:
+                        data_element["is_sequence"] = True
+                        data_element["collection_dimension_count"] = 0
+                        data_element["datum_dimension_count"] = len(data_element["data"].shape) - 1
+                        xdata = ImportExportManager.convert_data_element_to_data_and_metadata(data_element)
+                        xdatas.append(xdata)
+                    xdata = xdatas[0]
                 except Exception as e:
                     if str(e) == 'No simulator thread.':
                         success = False
@@ -385,7 +394,7 @@ class MultiEELS(object):
             self.process_and_send_data_thread.start()
             if _has_superscan:
                 _superscan.Scan_Settings_Property( _superscan.Scan_Property_Integer(len(self.__active_spectrum_parameters)), _superscan.Scan_Settings_LineRepeat())
-            with contextlib.closing(contextlib.closing(RecordTask(self.superscan, self.scan_parameters))) as scan_task:
+            with contextlib.closing(RecordTask(self.superscan, self.scan_parameters)) as scan_task:
 #                scan_center_y = self.scan_parameters["fov_nm"]/self.number_lines*(line-self.number_lines/2)
 #                self.scan_parameters["center_nm"] = (scan_center_y, self.scan_parameters["center_nm"][1])
                 for line in range(self.number_lines):
