@@ -119,6 +119,8 @@ class MultiEELS(object):
         elif self.__active_settings['x_shifter']:
             self.stem_controller.SetValAndConfirm(self.__active_settings['x_shifter'],
                                                   self.zeros['x'] + eV*self.__active_settings['x_units_per_ev'], 1.0, 1000)
+        else: # do not wait if nothing was done
+            return
         time.sleep(self.__active_settings['x_shift_delay'])
 
     def shift_y(self, px):
@@ -127,6 +129,8 @@ class MultiEELS(object):
         elif self.__active_settings['y_shifter']:
             self.stem_controller.SetValAndConfirm(self.__active_settings['y_shifter'],
                                                   self.zeros['y'] + px*self.__active_settings['y_units_per_px'], 1.0, 1000)
+        else: # do not wait if nothing was done
+            return
         time.sleep(self.__active_settings['y_shift_delay'])
 
     def adjust_focus(self, x_shift_ev):
@@ -195,6 +199,8 @@ class MultiEELS(object):
         spectra = []
         parameters_list = []
         for parameters in self.__active_spectrum_parameters:
+            print('start preparations')
+            starttime = time.time()
             if self.abort_event.is_set():
                 break
             self.shift_x(parameters['offset_x'])
@@ -206,12 +212,17 @@ class MultiEELS(object):
             self.camera.set_current_frame_parameters(frame_parameters)
             #self.camera.start_playing()
             #self.camera.grab_next_to_start()
-            self.camera.grab_sequence_prepare(parameters['frames']*number_pixels)
-            print('start sequence')
+            self.camera.acquire_sequence_prepare(parameters['frames']*number_pixels)
             success = False
+            print('finished preparations in {:g} s'.format(time.time() - starttime))
+            starttime = 0
             while not success:
                 try:
-                    frames = self.acquire_sequence(count)
+                    print('start sequence')
+                    starttime = time.time()
+                    frames = self.camera.acquire_sequence(parameters['frames']*number_pixels)
+                    print('end sequence in {:g} s'.format(time.time() - starttime))
+                    starttime = time.time()
                     xdatas = list()
                     for data_element in frames:
                         data_element["is_sequence"] = True
@@ -223,12 +234,11 @@ class MultiEELS(object):
                 except Exception as e:
                     if str(e) == 'No simulator thread.':
                         success = False
+                        print(e)
                     else:
                         raise
                 else:
                     success = True
-            print('end sequence')
-            starttime = time.time()
             if self.__active_settings['bin_spectra'] and xdata.datum_dimension_count != 1:
                     xdata = xd.sum(xdata, axis=1)
 
@@ -250,7 +260,7 @@ class MultiEELS(object):
                      'start_ev': parameters['offset_x'],
                      'end_ev': end_ev}
             parameters_list.append(parms)
-            print('finished acquisition ({:g} s)'.format(time.time() - starttime))
+            print('finished acquisition (processing time: {:g} s)'.format(time.time() - starttime))
         return {'data': spectra, 'parameters': parameters_list}
 
     def acquire_multi_eels_spectrum(self):
@@ -294,6 +304,11 @@ class MultiEELS(object):
             dimensional_calibrations[0] = Calibration.Calibration(**self.scan_calibrations[1])
             xdata._set_dimensional_calibrations(dimensional_calibrations)
             data_dict['data'][i] = xdata[flyback_pixels:]
+        if self.__active_settings['auto_dark_subtract']:
+            self.blank_beam()
+            dark_data_dict = self.__acquire_multi_eels_data(x_pixels+flyback_pixels)
+            self.unblank_beam()
+
         return data_dict
         # this is hopefully not needed anymore
 #        images = []
@@ -331,7 +346,7 @@ class MultiEELS(object):
                 raise NotImplementedError
             else:
                 images['line_number'] = line_number
-                if hasattr(self, 'number_lines') and line_number == self.number_lines:
+                if self.abort_event.is_set() or hasattr(self, 'number_lines') and line_number == self.number_lines-1:
                     images['is_last_line'] = True
                 self.new_data_ready_event.fire(images)
                 print('processed line')
@@ -371,8 +386,9 @@ class MultiEELS(object):
             logging.debug("start")
             self.acquisition_state_changed_event.fire({"message": "start"})
             self.superscan.abort_playing()
+            self.camera.abort_playing()
             self.scan_parameters = self.superscan.get_record_frame_parameters()
-            scan_max_size = 512
+            scan_max_size = np.inf
             self.scan_parameters["size"] = (min(scan_max_size, self.scan_parameters["size"][0]),
                                             min(scan_max_size, self.scan_parameters["size"][1]))
             self.scan_parameters["pixel_time_us"] = int(1000) #int(1000 * eels_camera_parameters["exposure_ms"] * 0.75)
@@ -399,8 +415,9 @@ class MultiEELS(object):
 #                self.scan_parameters["center_nm"] = (scan_center_y, self.scan_parameters["center_nm"][1])
                 for line in range(self.number_lines):
                     print(line)
+                    starttime = time.time()
                     res = self.acquire_multi_eels_line(self.scan_parameters["size"][1], flyback_pixels=flyback_pixels, first_line=line==0)
-                    print('acquired line')
+                    print('acquired line in {:g} s'.format(time.time() - starttime))
                     self.queue.put((line, res))
                     if self.abort_event.is_set():
                         break

@@ -107,6 +107,10 @@ class MultiEELSPanelDelegate(object):
     def __close_data_item_refs(self):
         for item_ref in self.__result_data_items_refs:
                 item_ref.__exit__(None, None, None)
+                try:
+                    item_ref._DataRef__data_item._data_item.decrement_data_ref_count()
+                except Exception as e:
+                    print(e)
         self.__result_data_items_refs = []
         self.result_data_items = []
 
@@ -116,6 +120,7 @@ class MultiEELSPanelDelegate(object):
             if not self.result_data_items:
                 print('here')
                 self.result_data_items = []
+                self.__result_data_items_refs = []
                 for i in range(len(data_dict['data'])):
                     xdata = data_dict['data'][i]
                     new_xdata = xd.reshape(xdata, (-1,) + xdata.data_shape)
@@ -162,7 +167,7 @@ class MultiEELSPanelDelegate(object):
             #self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
             self.MultiEELS.camera = self.EELScam
             #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
-            self.MultiEELS.settings['x_shift_delay'] = 1
+            #self.MultiEELS.settings['x_shift_delay'] = 1
             def run_multi_eels():
                 data_dict = self.MultiEELS.acquire_multi_eels_spectrum()
                 def create_and_display_data_item():
@@ -182,7 +187,7 @@ class MultiEELSPanelDelegate(object):
                 self.MultiEELS.camera = self.EELScam
                 self.MultiEELS.superscan = self.superscan
                 #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
-                self.MultiEELS.settings['x_shift_delay'] = 1
+                #self.MultiEELS.settings['x_shift_delay'] = 1
                 self.__close_data_item_refs()
                 threading.Thread(target=self.MultiEELS.acquire_multi_eels_spectrum_image).start()
 
