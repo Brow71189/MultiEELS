@@ -8,15 +8,57 @@ Created on Mon Oct 17 13:17:00 2016
 # standard libraries
 import logging
 import threading
-from queue import Empty
+import queue
+import numpy as np
 
 from multi_acquire_utils import MultiEELS
 from nion.ui import Dialog
 from nion.utils import Registry
 from nion.data import xdata_1_0 as xd
 from nion.data import Calibration
+from nion.swift.model import ImportExportManager
 
 from multi_acquire_utils import ColorCycle
+
+class AppendableDataItemFixedSize:
+    def __init__(self, data_item, final_data_shape, api, dtype=np.float32):
+        self.__data_cache = np.empty(final_data_shape, dtype=dtype)
+        self.__api = api
+        self.__data_item_ref = None
+        self.__data_item = data_item
+
+    @property
+    def _data_item(self):
+        return self.__data_item
+
+    def enter_write_suspend_state(self):
+        if not self.__data_item_ref:
+            self.__data_item_ref = self.__api.library.data_ref_for_data_item(self.__data_item)
+            self.__data_item_ref.__enter__()
+
+    def exit_write_suspend_state(self):
+        if self.__data_item_ref:
+            self.__data_item_ref.__exit__(None, None, None)
+        self.__data_item_ref = None
+
+    def add_data(self, slice_tuple, data):
+        self.__data_cache[slice_tuple] = data
+
+    def get_data(self, slice_tuple):
+        return self.__data_cache[slice_tuple]
+
+    def get_partial_data_item(self, slice_tuple):
+        xdata = self.__api.create_data_and_metadata(self.__data_cache[slice_tuple],
+                                                    intensity_calibration=self.__data_item.xdata.intensity_calibration,
+                                                    dimensional_calibrations=self.__data_item.xdata.dimensional_calibrations,
+                                                    metadata=self.__data_item.xdata.metadata,
+                                                    data_descriptor=self.__data_item.xdata.data_descriptor)
+        self.__data_item.set_data_and_metadata(xdata)
+        return self.__data_item
+
+    def get_full_data_item(self):
+        return self.get_partial_data_item((...,))
+
 
 class MultiEELSPanelDelegate(object):
 
@@ -42,16 +84,20 @@ class MultiEELSPanelDelegate(object):
                         field.text = '{:g}'.format(spectrum_parameters[name])
         self.MultiEELS.on_low_level_parameter_changed = low_level_parameter_changed
         self.__acquisition_state_changed_event_listener = self.MultiEELS.acquisition_state_changed_event.listen(self.acquisition_state_changed)
-        self.__new_data_ready_event_listener = self.MultiEELS.new_data_ready_event.listen(self.update_result)
+        self.__new_data_ready_event_listener = None
         self.stem_controller = None
         self.EELScam = None
         self.superscan = None
         self.settings_window_open = False
         self.parameters_window_open = False
         self.parameter_label_column = None
-        self.result_data_items = []
+        self.result_data_items = {}
         self.__result_data_items_refs = []
         self.__acquisition_running = False
+        self.__display_queue = queue.Queue()
+        self.__display_thread = None
+        self.__acquisision_thread = None
+        self.__data_processed_event = threading.Event()
 
     def create_result_data_item(self, data_dict):
         if data_dict.get('stitched_data'):
@@ -60,29 +106,30 @@ class MultiEELSPanelDelegate(object):
             metadata = data_item.metadata
             metadata['MultiEELS'] = data_dict['parameters']
             data_item.set_metadata(metadata)
-        elif not data_dict.get('stitched_data'):
+        else:
             display_layers = []
             ColorCycle.reset_color_cycle()
             display_item = None
-            for i in range(len(data_dict['data'])):
-                index = data_dict['parameters'][i]['index']
-                if i == 0 and data_dict['data'][i].is_data_1D:
+            for i in range(len(data_dict['data_element_list'])):
+                index = data_dict['parameter_list'][i]['index']
+                xdata = ImportExportManager.convert_data_element_to_data_and_metadata(data_dict['data_element_list'][i])
+                if i == 0 and xdata.is_data_1d:
                     data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
-                                                                                        data_dict['data'][i],
+                                                                                        xdata,
                                                                                         title='MultiEELS (stacked)')
                     display_item = self.__api.library._document_model.get_display_item_for_data_item(data_item._data_item)
                     new_data_item = data_item
                 else:
                     new_data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
-                                                                                data_dict['data'][i],
+                                                                                xdata,
                                                                                 title='MultiEELS #{:d}'.format(index))
                 metadata = new_data_item.metadata
-                metadata['MultiEELS'] = data_dict['parameters'][i]
+                metadata['MultiEELS'] = data_dict['parameter_list'][i]
                 new_data_item.set_metadata(metadata)
                 if display_item:
                     display_item.append_display_data_channel_for_data_item(new_data_item._data_item)
-                    start_ev = data_dict['parameters'][i]['start_ev']
-                    end_ev = data_dict['parameters'][i]['end_ev']
+                    start_ev = data_dict['parameter_list'][i]['start_ev']
+                    end_ev = data_dict['parameter_list'][i]['end_ev']
                     display_layers.append({'label': '#{:d}: {:g}-{:2g} eV'.format(index, start_ev, end_ev),
                                            'data_index': i,
                                            'fill_color': ColorCycle.get_next_color()})
@@ -102,91 +149,155 @@ class MultiEELSPanelDelegate(object):
             def update_button():
                 self.start_si_button.text = 'Start MultiEELS spectrum image'
             self.__api.queue_task(update_button)
-
         elif info_dict.get('message') == 'exception':
             self.__close_data_item_refs()
+        elif info_dict.get('message') == 'end processing':
+            self.__data_processed_event.set()
 
     def __close_data_item_refs(self):
-        for item_ref in self.__result_data_items_refs:
-                item_ref.__exit__(None, None, None)
-        self.__result_data_items_refs = []
+        for item in self.result_data_items.values():
+            item.exit_write_suspend_state()
 #        for item in self.result_data_items:
 #            try:
 #                while True:
 #                    item.xdata.decrement_data_ref_count()
 #            except AssertionError:
 #                pass
-        self.result_data_items = []
+        self.__new_data_ready_event_listener = None
+        self.result_data_items = {}
 
-    def update_result(self, data_dict):
-        print('got from disp queue')
-        def create_or_update_data_items():
-            if not self.result_data_items:
-                print('here')
-                self.result_data_items = []
-                self.__result_data_items_refs = []
-                xdata_list = data_dict.pop('data')
-                for i in range(len(xdata_list)):
-                    xdata = xdata_list[i]
-                    new_xdata = xd.reshape(xdata, (-1,) + xdata.data_shape)
-                    dimensional_calibrations = new_xdata.dimensional_calibrations
-                    dimensional_calibrations[0] = Calibration.Calibration(**self.MultiEELS.scan_calibrations[0])
-                    if data_dict.get('stitched_data'):
-                        new_data_item = self.__api.library.create_data_item_from_data_and_metadata(new_xdata,
-                                                                                        title='MultiEELS (stitched)')
-                        metadata = xdata.metadata
-                        metadata['MultiEELS'] = data_dict['parameters']
-                    else:
-                        parms = data_dict['parameters'][i]
-                        new_data_item = self.__api.library.create_data_item_from_data_and_metadata(new_xdata,
-                                                                      title='MultiEELS #{:d}'.format(parms['index']))
-                        metadata = xdata.metadata
-                        metadata['MultiEELS'] = data_dict['parameters'][i]
+    def add_to_display_queue(self, data_dict):
+        self.__display_queue.put(data_dict)
 
-                    new_data_item.set_metadata(metadata)
-                    new_data_item_ref = self.__api.library.data_ref_for_data_item(new_data_item)
-                    new_data_item_ref.__enter__()
-                    self.__result_data_items_refs.append(new_data_item_ref)
-                    #new_data_item_ref = None
-                    self.result_data_items.append(new_data_item)
-                    #new_data_item = None
-#                    try:
-#                        while True:
-#                            xdata.decrement_data_ref_count()
-#                    except AssertionError:
-#                        pass
-                #xdata_list = None
+    def process_display_queue(self):
+        while True:
+            try:
+                data_dict = self.__display_queue.get(timeout=1)
+            except queue.Empty:
+                if self.__data_processed_event.is_set() and not self.__acquisition_running:
+                    self.__close_data_item_refs()
+                    break
             else:
-                print('here2')
-                xdata_list = data_dict.pop('data')
-                for i in range(len(xdata_list)):
-                    new_xdata = xd.concatenate([self.result_data_items[i].xdata,
-                                                xd.reshape(xdata_list[i], (-1,) + xdata_list[i].data_shape)], axis=0)
-                    #old_xdata = self.result_data_items[i].xdata
-                    self.result_data_items[i].set_data_and_metadata(new_xdata)
-                    #new_xdata = None
-                    new_data_item_ref = self.__api.library.data_ref_for_data_item(self.result_data_items[i])
-                    new_data_item_ref.__enter__()
-                    self.__result_data_items_refs[i].__exit__(None, None, None)
-                    self.__result_data_items_refs[i] = new_data_item_ref
-                    #new_data_item_ref = None
-#                    try:
-#                        while True:
-#                            old_xdata.decrement_data_ref_count()
-#                    except AssertionError:
-#                        pass
-#                    #old_xdata = None
-#                    try:
-#                        while True:
-#                            xdata_list[i].decrement_data_ref_count()
-#                    except AssertionError:
-#                        pass
-                #xdata_list = None
-            print('finished display')
-            if data_dict.get('is_last_line'):
-                #self.__close_data_item_refs()
-                threading.Thread(target=self.__close_data_item_refs, daemon=True).start()
-        self.__api.queue_task(create_or_update_data_items)
+                index = data_dict['parameters']['index']
+                line_number = data_dict['parameters']['line_number']
+                data_element = data_dict['data_element']
+                line_data = data_element['data']
+                print('got data from display queue')
+                if not self.result_data_items.get(index):
+                    print('creating new data item')
+                    spatial_calibrations = data_element['spatial_calibrations']
+                    data_element['data'] = line_data[np.newaxis, ...]
+                    data_element['collection_dimension_count'] = 2
+                    data_element['spatial_calibrations'] = self.MultiEELS.scan_calibrations[0:1] + spatial_calibrations
+                    data_element['metadata'] = data_dict['parameters']
+                    new_xdata = ImportExportManager.convert_data_element_to_data_and_metadata(data_element)
+                    title = 'MultiEELS (stitched)' if data_dict.get('stitched_data') else 'MultiEELS #{:d}'.format(
+                                                                                                                index)
+                    data_item_ready_event = threading.Event()
+                    new_data_item = None
+                    def create_data_item():
+                        nonlocal new_data_item
+                        # we have to create the initial data item with some data that has more than 2 dimensions
+                        # otherwise Swift does not use HDF5 and we will have a problem if it grows too big later
+                        new_data_item = self.__api.library.create_data_item_from_data_and_metadata(new_xdata,
+                                                                                                   title=title)
+                        data_item_ready_event.set()
+                    self.__api.queue_task(create_data_item)
+                    data_item_ready_event.wait()
+                    number_lines = data_dict['parameters'].get('number_lines', self.MultiEELS.number_lines)
+                    max_shape = (number_lines,) + line_data.shape
+                    new_appendable_data_item = AppendableDataItemFixedSize(new_data_item, max_shape, self.__api)
+                    new_appendable_data_item.enter_write_suspend_state()
+                    self.result_data_items[index] = new_appendable_data_item
+                    # add the line we have already in our data item to the appendable data item to have them in the
+                    # same state
+                    new_appendable_data_item.add_data((line_number,...), line_data)
+                    self.__api.queue_task(
+                            lambda: self.result_data_items[index].get_partial_data_item((slice(0, line_number+1),
+                                                                                         ...)))
+                    del new_xdata
+                    del new_appendable_data_item
+                else:
+                    self.result_data_items[index].add_data((line_number,...), line_data)
+                    self.__api.queue_task(
+                            lambda: self.result_data_items[index].get_partial_data_item((slice(0, line_number+1),
+                                                                                         ...)))
+                del line_data
+                del data_element
+                del data_dict
+                self.__display_queue.task_done()
+                print('displayed line {:.0f}'.format(line_number))
+
+
+#    def update_result(self, data_dict):
+#        print('got from disp queue')
+#        def create_or_update_data_items():
+#            if not self.result_data_items:
+#                print('here')
+#                self.result_data_items = []
+#                self.__result_data_items_refs = []
+#                xdata_list = data_dict.pop('data')
+#                for i in range(len(xdata_list)):
+#                    xdata = xdata_list[i]
+#                    new_xdata = xd.reshape(xdata, (-1,) + xdata.data_shape)
+#                    dimensional_calibrations = new_xdata.dimensional_calibrations
+#                    dimensional_calibrations[0] = Calibration.Calibration(**self.MultiEELS.scan_calibrations[0])
+#                    if data_dict.get('stitched_data'):
+#                        new_data_item = self.__api.library.create_data_item_from_data_and_metadata(new_xdata,
+#                                                                                        title='MultiEELS (stitched)')
+#                        metadata = xdata.metadata
+#                        metadata['MultiEELS'] = data_dict['parameters']
+#                    else:
+#                        parms = data_dict['parameters'][i]
+#                        new_data_item = self.__api.library.create_data_item_from_data_and_metadata(new_xdata,
+#                                                                      title='MultiEELS #{:d}'.format(parms['index']))
+#                        metadata = xdata.metadata
+#                        metadata['MultiEELS'] = data_dict['parameters'][i]
+#
+#                    new_data_item.set_metadata(metadata)
+#                    new_data_item_ref = self.__api.library.data_ref_for_data_item(new_data_item)
+#                    new_data_item_ref.__enter__()
+#                    self.__result_data_items_refs.append(new_data_item_ref)
+#                    #new_data_item_ref = None
+#                    self.result_data_items.append(new_data_item)
+#                    #new_data_item = None
+##                    try:
+##                        while True:
+##                            xdata.decrement_data_ref_count()
+##                    except AssertionError:
+##                        pass
+#                #xdata_list = None
+#            else:
+#                print('here2')
+#                xdata_list = data_dict.pop('data')
+#                for i in range(len(xdata_list)):
+#                    new_xdata = xd.concatenate([self.result_data_items[i].xdata,
+#                                                xd.reshape(xdata_list[i], (-1,) + xdata_list[i].data_shape)], axis=0)
+#                    #old_xdata = self.result_data_items[i].xdata
+#                    self.result_data_items[i].set_data_and_metadata(new_xdata)
+#                    #new_xdata = None
+#                    new_data_item_ref = self.__api.library.data_ref_for_data_item(self.result_data_items[i])
+#                    new_data_item_ref.__enter__()
+#                    self.__result_data_items_refs[i].__exit__(None, None, None)
+#                    self.__result_data_items_refs[i] = new_data_item_ref
+#                    #new_data_item_ref = None
+##                    try:
+##                        while True:
+##                            old_xdata.decrement_data_ref_count()
+##                    except AssertionError:
+##                        pass
+##                    #old_xdata = None
+##                    try:
+##                        while True:
+##                            xdata_list[i].decrement_data_ref_count()
+##                    except AssertionError:
+##                        pass
+#                #xdata_list = None
+#            print('finished display')
+#            if data_dict.get('is_last_line'):
+#                #self.__close_data_item_refs()
+#                threading.Thread(target=self.__close_data_item_refs, daemon=True).start()
+#        self.__api.queue_task(create_or_update_data_items)
 
     def create_panel_widget(self, ui, document_controller):
         self.ui = ui
@@ -206,7 +317,8 @@ class MultiEELSPanelDelegate(object):
                 def create_and_display_data_item():
                     self.create_result_data_item(data_dict)
                 document_controller.queue_task(create_and_display_data_item)  # must occur on UI thread
-            threading.Thread(target=run_multi_eels, daemon=True).start()
+            self.__acquisision_thread = threading.Thread(target=run_multi_eels, daemon=True)
+            self.__acquisision_thread.start()
 
         def start_si_clicked():
             if self.__acquisition_running:
@@ -221,8 +333,13 @@ class MultiEELSPanelDelegate(object):
                 self.MultiEELS.superscan = self.superscan
                 #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
                 #self.MultiEELS.settings['x_shift_delay'] = 1
-                self.__close_data_item_refs()
-                threading.Thread(target=self.MultiEELS.acquire_multi_eels_spectrum_image, daemon=True).start()
+                self.__new_data_ready_event_listener = self.MultiEELS.new_data_ready_event.listen(self.add_to_display_queue)
+                self.__data_processed_event.clear()
+                self.__display_thread = threading.Thread(target=self.process_display_queue)
+                self.__display_thread.start()
+                self.__acquisision_thread = threading.Thread(
+                        target=self.MultiEELS.acquire_multi_eels_spectrum_image, daemon=True)
+                self.__acquisision_thread.start()
 
         def settings_button_clicked():
             if not self.settings_window_open:
