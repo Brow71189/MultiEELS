@@ -266,7 +266,7 @@ class MultiEELS(object):
             self.unblank_beam()
             self.__queue.join()
             for i in range(len(self.__active_spectrum_parameters)):
-                dark_data_dict = data_dict_list.pop(len(self.__active_spectrum_parameters) + i)
+                dark_data_dict = data_dict_list.pop(len(self.__active_spectrum_parameters))
                 data_dict_list[i]['data_element']['data'] -= dark_data_dict['data_element']['data']
         self.acquisition_state_changed_event.fire({"message": "end"})
         self.camera.set_current_frame_parameters(start_frame_parameters)
@@ -359,7 +359,8 @@ class MultiEELS(object):
                 else:
                     line_number = data_dict['parameters']['line_number']
 
-                    if self.abort_event.is_set() or hasattr(self, 'number_lines') and line_number == self.number_lines-1:
+                    if (self.abort_event.is_set() or hasattr(self, 'number_lines') and
+                        line_number == self.number_lines-1):
                         data_dict['parameters']['is_last_line'] = True
 
                     if hasattr(self, 'number_lines'):
@@ -367,7 +368,10 @@ class MultiEELS(object):
 
                     data_element = data_dict['data_element']
                     data = data_element['data']
+                    old_spatial_calibrations = data_element.get('spatial_calibrations', list())
                     if self.__active_settings['bin_spectra'] and len(data.shape) > 2:
+                        if len(old_spatial_calibrations) == len(data.shape):
+                            old_spatial_calibrations.pop(1)
                         data = np.sum(data, axis=1)
                     # bring data to universal shape: ('pixels', 'frames', 'data', 'data')
                     number_frames = data_dict['parameters']['frames']
@@ -385,15 +389,16 @@ class MultiEELS(object):
                     data_element['datum_dimension_count'] = 1 if self.__active_settings['bin_spectra'] else 2
                     # update calibrations
                     spatial_calibrations = [self.scan_calibrations[1].copy()]
-                    old_spatial_calibrations = data_element.get('spatial_calibrations', list())
-                    if len(old_spatial_calibrations) == len(data.shape) - 1:
+                    if len(old_spatial_calibrations) == len(data.shape):
                         spatial_calibrations.extend(old_spatial_calibrations[1:])
                     else:
-                        spatial_calibrations.extend([{'offset': 0, 'scale': 1, 'units': ''} for i in range(len(data.shape)-1)])
-
+                        spatial_calibrations.extend([{'offset': 0, 'scale': 1, 'units': ''}
+                                                     for i in range(len(data.shape)-1)])
+                    data_element['spatial_calibrations'] = spatial_calibrations
                     counts_per_electron = data_element.get('properties', {}).get('counts_per_electron', 1)
                     exposure_ms = data_element.get('properties', {}).get('exposure', 1)
-                    intensity_scale = (data_element.get('intensity_calibration', 1) / counts_per_electron /
+                    intensity_scale = (data_element.get('intensity_calibration', {}).get('scale', 1) /
+                                       counts_per_electron /
                                        data_element.get('spatial_calibrations', [{}])[-1].get('scale', 1) /
                                        exposure_ms / number_frames)
                     data_element['intensity_calibration'] = {'offset': 0, 'scale': intensity_scale, 'units': 'e/eV/s'}

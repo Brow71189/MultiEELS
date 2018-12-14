@@ -211,7 +211,7 @@ class MultiEELSPanelDelegate(object):
                     self.result_data_items[index] = new_appendable_data_item
                     # add the line we have already in our data item to the appendable data item to have them in the
                     # same state
-                    new_appendable_data_item.add_data((line_number,...), line_data)
+                    self.result_data_items[index].add_data((line_number,...), line_data)
                     self.__api.queue_task(
                             lambda: self.result_data_items[index].get_partial_data_item((slice(0, line_number+1),
                                                                                          ...)))
@@ -333,6 +333,7 @@ class MultiEELSPanelDelegate(object):
                 self.MultiEELS.superscan = self.superscan
                 #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
                 #self.MultiEELS.settings['x_shift_delay'] = 1
+                self.result_data_items = {}
                 self.__new_data_ready_event_listener = self.MultiEELS.new_data_ready_event.listen(self.add_to_display_queue)
                 self.__data_processed_event.clear()
                 self.__display_thread = threading.Thread(target=self.process_display_queue)
