@@ -9,16 +9,12 @@ import time
 import numpy as np
 import threading
 import contextlib
-from nion.swift.model import HardwareSource
 from nion.utils import Event
-from nion.data import xdata_1_0 as xd
-from nion.data import DataAndMetadata
-from nion.data import Calibration
 from nion.instrumentation.scan_base import RecordTask
-from nion.swift.model import ImportExportManager
 import logging
 import queue
 import copy
+
 try:
     import _superscan
 except ImportError as e:
@@ -27,16 +23,60 @@ except ImportError as e:
 else:
     _has_superscan = True
 
+class MultiEELSSettings(dict):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.settings_changed_event = Event.Event()
+
+    def __setitem__(self, key, value):
+        old_value = self.__getitem__(key)
+        super().__setitem__(key, value)
+        if value != old_value:
+            self.settings_changed_event.fire()
+
+    def __copy__(self):
+        return super().copy()
+
+    def __deepcopy__(self, memo):
+        return copy.deepcopy(super().copy())
+
+class MultiEELSParameters(list):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.parameters_changed_event = Event.Event()
+
+    def __setitem__(self, index, value):
+        old_value = self.__getitem__(index)
+        super().__setitem__(index, value)
+        if old_value != value:
+            self.parameters_changed_event.fire()
+
+    def append(self, value):
+        super().append(value)
+        self.parameters_changed_event.fire()
+
+    def pop(self, index=-1):
+        super().pop(index)
+        self.parameters_changed_event.fire()
+
+    def __copy__(self):
+        return super().copy()
+
+    def __deepcopy__(self, memo):
+        return copy.deepcopy(super().copy())
+
 class MultiEELS(object):
     def __init__(self, **kwargs):
-        self.spectrum_parameters = [{'index': 0, 'offset_x': 0, 'offset_y': 0, 'exposure_ms': 1, 'frames': 1},
+        self.spectrum_parameters = MultiEELSParameters(
+                                   [{'index': 0, 'offset_x': 0, 'offset_y': 0, 'exposure_ms': 1, 'frames': 1},
                                     {'index': 1, 'offset_x': 160, 'offset_y': 160, 'exposure_ms': 8, 'frames': 1},
-                                    {'index': 2, 'offset_x': 320, 'offset_y': 320, 'exposure_ms': 16, 'frames': 1}]
-        self.settings = {'x_shifter': 'EELS_MagneticShift_Offset', 'y_shifter': '', 'x_units_per_ev': 1,
+                                    {'index': 2, 'offset_x': 320, 'offset_y': 320, 'exposure_ms': 16, 'frames': 1}])
+        self.settings = MultiEELSSettings(
+                        {'x_shifter': 'EELS_MagneticShift_Offset', 'y_shifter': '', 'x_units_per_ev': 1,
                          'y_units_per_px': 0.00081, 'blanker': '', 'x_shift_delay': 0.05, 'y_shift_delay': 0.05,
                          'focus': '', 'focus_delay': 0, 'saturation_value': 12000, 'y_align': True,
                          'stitch_spectra': False, 'auto_dark_subtract': False, 'bin_spectra': True,
-                         'blanker_delay': 0.05}
+                         'blanker_delay': 0.05})
         self.on_low_level_parameter_changed = None
         self.stem_controller = None
         self.camera = None
@@ -60,14 +100,14 @@ class MultiEELS(object):
             parameters = self.spectrum_parameters[-1].copy()
         parameters['index'] = len(self.spectrum_parameters)
         self.spectrum_parameters.append(parameters)
-        if callable(self.on_low_level_parameter_changed):
-            self.on_low_level_parameter_changed('added_spectrum')
+#        if callable(self.on_low_level_parameter_changed):
+#            self.on_low_level_parameter_changed('added_spectrum')
 
     def remove_spectrum(self):
         assert len(self.spectrum_parameters) > 1, 'Number of spectra cannot become smaller than 1.'
         self.spectrum_parameters.pop()
-        if callable(self.on_low_level_parameter_changed):
-            self.on_low_level_parameter_changed('removed_spectrum')
+#        if callable(self.on_low_level_parameter_changed):
+#            self.on_low_level_parameter_changed('removed_spectrum')
 
     def get_offset_x(self, index):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined!'.format(index)
@@ -76,8 +116,8 @@ class MultiEELS(object):
     def set_offset_x(self, index, offset_x):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
         self.spectrum_parameters[index]['offset_x'] = offset_x
-        if callable(self.on_low_level_parameter_changed):
-            self.on_low_level_parameter_changed('spectrum_parameters')
+#        if callable(self.on_low_level_parameter_changed):
+#            self.on_low_level_parameter_changed('spectrum_parameters')
 
     def get_offset_y(self, index):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined!'.format(index)
@@ -86,8 +126,8 @@ class MultiEELS(object):
     def set_offset_y(self, index, offset_y):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
         self.spectrum_parameters[index]['offset_y'] = offset_y
-        if callable(self.on_low_level_parameter_changed):
-            self.on_low_level_parameter_changed('spectrum_parameters')
+#        if callable(self.on_low_level_parameter_changed):
+#            self.on_low_level_parameter_changed('spectrum_parameters')
 
     def get_exposure_ms(self, index):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined!'.format(index)
@@ -96,8 +136,8 @@ class MultiEELS(object):
     def set_exposure_ms(self, index, exposure_ms):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
         self.spectrum_parameters[index]['exposure_ms'] = exposure_ms
-        if callable(self.on_low_level_parameter_changed):
-            self.on_low_level_parameter_changed('spectrum_parameters')
+#        if callable(self.on_low_level_parameter_changed):
+#            self.on_low_level_parameter_changed('spectrum_parameters')
 
     def get_frames(self, index):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined!'.format(index)
@@ -106,8 +146,8 @@ class MultiEELS(object):
     def set_frames(self, index, frames):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
         self.spectrum_parameters[index]['frames'] = frames
-        if callable(self.on_low_level_parameter_changed):
-            self.on_low_level_parameter_changed('spectrum_parameters')
+#        if callable(self.on_low_level_parameter_changed):
+#            self.on_low_level_parameter_changed('spectrum_parameters')
 
     def shift_x(self, eV):
         if callable(self.__active_settings['x_shifter']):
@@ -471,7 +511,7 @@ class MultiEELS(object):
             self.process_and_send_data_thread.start()
             if _has_superscan:
                 _superscan.Scan_Settings_Property(_superscan.Scan_Settings_LineRepeat, _superscan.Scan_Property_Integer_Set(len(self.__active_spectrum_parameters)))
-            with contextlib.closing(RecordTask(self.superscan, self.scan_parameters)):# as scan_task:
+            with contextlib.closing(RecordTask(self.superscan, self.scan_parameters)) as scan_task:
 #                scan_center_y = self.scan_parameters["fov_nm"]/self.number_lines*(line-self.number_lines/2)
 #                self.scan_parameters["center_nm"] = (scan_center_y, self.scan_parameters["center_nm"][1])
                 for line in range(self.number_lines):
