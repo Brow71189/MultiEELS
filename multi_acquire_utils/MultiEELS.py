@@ -69,11 +69,11 @@ class MultiEELS(object):
     def __init__(self, **kwargs):
         self.spectrum_parameters = MultiEELSParameters(
                                    [{'index': 0, 'offset_x': 0, 'offset_y': 0, 'exposure_ms': 1, 'frames': 1},
-                                    {'index': 1, 'offset_x': 160, 'offset_y': 160, 'exposure_ms': 8, 'frames': 1},
-                                    {'index': 2, 'offset_x': 320, 'offset_y': 320, 'exposure_ms': 16, 'frames': 1}])
+                                    {'index': 1, 'offset_x': 160, 'offset_y': 0, 'exposure_ms': 8, 'frames': 1},
+                                    {'index': 2, 'offset_x': 320, 'offset_y': 0, 'exposure_ms': 16, 'frames': 1}])
         self.settings = MultiEELSSettings(
-                        {'x_shifter': 'EELS_MagneticShift_Offset', 'y_shifter': '', 'x_units_per_ev': 1,
-                         'y_units_per_px': 0.00081, 'blanker': '', 'x_shift_delay': 0.05, 'y_shift_delay': 0.05,
+                        {'x_shifter': 'LossMagnetic', 'y_shifter': '', 'x_units_per_ev': 1,
+                         'y_units_per_px': 0.00081, 'blanker': 'C_Blank', 'x_shift_delay': 0.05, 'y_shift_delay': 0.05,
                          'focus': '', 'focus_delay': 0, 'saturation_value': 12000, 'y_align': True,
                          'stitch_spectra': False, 'auto_dark_subtract': False, 'bin_spectra': True,
                          'blanker_delay': 0.05})
@@ -485,7 +485,7 @@ class MultiEELS(object):
             self.zeros['y'] = self.stem_controller.GetVal(self.__active_settings['y_shifter'])
         try:
             logging.debug("start")
-            self.acquisition_state_changed_event.fire({"message": "start"})
+            self.acquisition_state_changed_event.fire({'message': 'start', 'description': 'spectrum image'})
             self.superscan.abort_playing()
             self.camera.abort_playing()
             self.scan_parameters = self.superscan.get_record_frame_parameters()
@@ -538,7 +538,7 @@ class MultiEELS(object):
             print(e)
             raise
         finally:
-            self.acquisition_state_changed_event.fire({"message": "end"})
+            self.acquisition_state_changed_event.fire({'message': 'end', 'description': 'spectrum image'})
             self.__acquisition_finished_event.set()
             if _has_superscan:
                 _superscan.Scan_Settings_Property(_superscan.Scan_Settings_LineRepeat, _superscan.Scan_Property_Integer_Set(0))

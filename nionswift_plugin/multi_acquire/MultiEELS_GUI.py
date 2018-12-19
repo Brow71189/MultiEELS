@@ -605,6 +605,20 @@ class MultiEELSPanelDelegate(object):
                     finally:
                         y_shift_delay_field.text = '{:g}'.format(MultiEELSGUI.MultiEELS.settings['y_shift_delay'])
 
+                def blanker_finished(text):
+                    newvalue = str(text)
+                    MultiEELSGUI.MultiEELS.settings['blanker'] = newvalue
+
+                def blanker_delay_finished(text):
+                    try:
+                        newvalue = float(text)
+                    except ValueError:
+                        pass
+                    else:
+                        MultiEELSGUI.MultiEELS.settings['blanker_delay'] = newvalue
+                    finally:
+                        blanker_delay_field.text = '{:g}'.format(MultiEELSGUI.MultiEELS.settings['blanker_delay'])
+
                 def align_y_checkbox_changed(check_state):
                     MultiEELSGUI.MultiEELS.settings['y_align'] = check_state == 'checked'
 
@@ -647,6 +661,10 @@ class MultiEELSPanelDelegate(object):
                 bin_1D_checkbox = self.ui.create_check_box_widget('Bin data in y direction ')
                 saturation_value_label = self.ui.create_label_widget('Camera saturation value: ')
                 saturation_value_field = self.ui.create_line_edit_widget()
+                blanker_label = self.ui.create_label_widget('Blanker control name: ')
+                blanker_field = self.ui.create_line_edit_widget()
+                blanker_delay_label = self.ui.create_label_widget('Blanker delay (s): ')
+                blanker_delay_field = self.ui.create_line_edit_widget()
 
                 row1.add_spacing(5)
                 row1.add(x_shifter_label)
@@ -675,13 +693,18 @@ class MultiEELSPanelDelegate(object):
                 row3.add_spacing(5)
                 #row3.add(align_y_checkbox)
                 #row3.add_spacing(20)
-                row3.add(auto_dark_subtract_checkbox)
+                row3.add(blanker_label)
+                row3.add(blanker_field)
                 row3.add_spacing(5)
                 row3.add_stretch()
+                row3.add(blanker_delay_label)
+                row3.add(blanker_delay_field)
+                row3.add_spacing(5)
 
                 row4.add_spacing(5)
                 row4.add(bin_1D_checkbox)
-                #row4.add_spacing(20)
+                row4.add_spacing(20)
+                row4.add(auto_dark_subtract_checkbox)
                 #row4.add(saturation_value_label)
                 #row4.add(saturation_value_field)
                 row4.add_spacing(5)
@@ -714,17 +737,23 @@ class MultiEELSPanelDelegate(object):
                 #align_y_checkbox.on_check_state_changed = align_y_checkbox_changed
                 auto_dark_subtract_checkbox.on_check_state_changed = auto_dark_subtract_checkbox_changed
                 bin_1D_checkbox.on_check_state_changed = bin_1D_checkbox_changed
+                x_shifter_field.on_editing_finished = x_shifter_finished
+                y_shifter_field.on_editing_finished = y_shifter_finished
                 x_shift_strength_field.on_editing_finished = x_shift_strength_finished
                 y_shift_strength_field.on_editing_finished = y_shift_strength_finished
                 x_shift_delay_field.on_editing_finished = x_shift_delay_finished
                 y_shift_delay_field.on_editing_finished = y_shift_delay_finished
+                blanker_field.on_editing_finished = blanker_finished
+                blanker_delay_field.on_editing_finished = blanker_delay_finished
 
                 self.line_edits.update({'x_shifter': x_shifter_field,
                                         'x_units_per_ev': x_shift_strength_field,
                                         'x_shift_delay': x_shift_delay_field,
                                         'y_shifter': y_shifter_field,
                                         'y_units_per_px': y_shift_strength_field,
-                                        'y_shift_delay': y_shift_delay_field})
+                                        'y_shift_delay': y_shift_delay_field,
+                                        'blanker': blanker_field,
+                                        'blanker_delay': blanker_delay_field})
 
                 self.checkboxes.update({'auto_dark_subtract': auto_dark_subtract_checkbox,
                                         'bin_spectra': bin_1D_checkbox})
