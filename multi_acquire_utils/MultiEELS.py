@@ -183,6 +183,8 @@ class MultiEELS(object):
             self.__active_settings['blanker'](blanker_on)
         elif self.__active_settings['blanker']:
             self.stem_controller.SetValAndConfirm(self.__active_settings['blanker'], 1 if blanker_on else 0, 1.0, 1000)
+        else: # do not wait if nothing was done
+            return
         time.sleep(self.__active_settings['blanker_delay'])
 
     def get_stitch_ranges(self, spectra):
@@ -281,34 +283,36 @@ class MultiEELS(object):
             print('finished acquisition')
 
     def acquire_multi_eels_spectrum(self):
-        self.__active_settings = copy.deepcopy(self.settings)
-        self.__active_spectrum_parameters = copy.copy(self.spectrum_parameters)
-        self.abort_event.clear()
-        self.__acquisition_finished_event.clear()
-        self.__process_and_send_data_thread = threading.Thread(target=self.process_and_send_data)
-        self.__process_and_send_data_thread.start()
-        self.acquisition_state_changed_event.fire({"message": "start"})
-        if hasattr(self, 'number_lines'):
-            delattr(self, 'number_lines')
-        data_dict_list = []
-        def add_data_to_list(data_dict):
-            data_dict_list.append(data_dict)
-        new_data_listener = self.new_data_ready_event.listen(add_data_to_list)
-        if not callable(self.__active_settings['x_shifter']) and self.__active_settings['x_shifter']:
-            self.zeros['x'] = self.stem_controller.GetVal(self.__active_settings['x_shifter'])
-        if not callable(self.__active_settings['y_shifter']) and self.__active_settings['y_shifter']:
-            self.zeros['y'] = self.stem_controller.GetVal(self.__active_settings['y_shifter'])
-        start_frame_parameters = self.camera.get_current_frame_parameters()
-        self.__acquire_multi_eels_data(1)
-        if self.__active_settings['auto_dark_subtract']:
-            self.blank_beam()
+        try:
+            self.__active_settings = copy.deepcopy(self.settings)
+            self.__active_spectrum_parameters = copy.copy(self.spectrum_parameters)
+            self.abort_event.clear()
+            self.__acquisition_finished_event.clear()
+            self.__process_and_send_data_thread = threading.Thread(target=self.process_and_send_data)
+            self.__process_and_send_data_thread.start()
+            self.acquisition_state_changed_event.fire({'message': 'start', 'description': 'single spectrum'})
+            if hasattr(self, 'number_lines'):
+                delattr(self, 'number_lines')
+            data_dict_list = []
+            def add_data_to_list(data_dict):
+                data_dict_list.append(data_dict)
+            new_data_listener = self.new_data_ready_event.listen(add_data_to_list)
+            if not callable(self.__active_settings['x_shifter']) and self.__active_settings['x_shifter']:
+                self.zeros['x'] = self.stem_controller.GetVal(self.__active_settings['x_shifter'])
+            if not callable(self.__active_settings['y_shifter']) and self.__active_settings['y_shifter']:
+                self.zeros['y'] = self.stem_controller.GetVal(self.__active_settings['y_shifter'])
+            start_frame_parameters = self.camera.get_current_frame_parameters()
             self.__acquire_multi_eels_data(1)
-            self.unblank_beam()
-            self.__queue.join()
-            for i in range(len(self.__active_spectrum_parameters)):
-                dark_data_dict = data_dict_list.pop(len(self.__active_spectrum_parameters))
-                data_dict_list[i]['data_element']['data'] -= dark_data_dict['data_element']['data']
-        self.acquisition_state_changed_event.fire({"message": "end"})
+            if self.__active_settings['auto_dark_subtract']:
+                self.blank_beam()
+                self.__acquire_multi_eels_data(1)
+                self.unblank_beam()
+                self.__queue.join()
+                for i in range(len(self.__active_spectrum_parameters)):
+                    dark_data_dict = data_dict_list.pop(len(self.__active_spectrum_parameters))
+                    data_dict_list[i]['data_element']['data'] -= dark_data_dict['data_element']['data']
+        finally:
+            self.acquisition_state_changed_event.fire({'message': 'end', 'description': 'single spectrum'})
         self.camera.set_current_frame_parameters(start_frame_parameters)
         self.shift_y(0)
         self.shift_x(0)

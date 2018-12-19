@@ -146,16 +146,33 @@ class MultiEELSPanelDelegate(object):
     def acquisition_state_changed(self, info_dict):
         if info_dict.get('message') == 'start':
             self.__acquisition_running = True
-            def update_button():
-                self.start_si_button.text = 'Abort MultiEELS spectrum image'
-            self.__api.queue_task(update_button)
+            if info_dict.get('description') == 'spectrum image':
+                def update_buttons():
+                    self.start_si_button.text = 'Abort MultiEELS spectrum image'
+                    self.start_button._widget.enabled = False
+            else:
+                def update_buttons():
+                    self.start_button.text = 'Abort MultiEELS'
+                    self.start_si_button._widget.enabled = False
+            self.__api.queue_task(update_buttons)
         elif info_dict.get('message') == 'end':
             self.__acquisition_running = False
-            def update_button():
+            def update_buttons():
                 self.start_si_button.text = 'Start MultiEELS spectrum image'
-            self.__api.queue_task(update_button)
+                self.start_button.text = 'Start MultiEELS'
+                self.start_button._widget.enabled = True
+                self.start_si_button._widget.enabled = True
+            self.__api.queue_task(update_buttons)
         elif info_dict.get('message') == 'exception':
+            self.__acquisition_running = False
             self.__close_data_item_refs()
+            def update_buttons():
+                self.start_si_button.text = 'Start MultiEELS spectrum image'
+                self.start_button.text = 'Start MultiEELS'
+                self.start_button._widget.enabled = True
+                self.start_si_button._widget.enabled = True
+            self.__api.queue_task(update_buttons)
+            self.__data_processed_event.set()
         elif info_dict.get('message') == 'end processing':
             self.__data_processed_event.set()
 
@@ -406,7 +423,8 @@ class MultiEELSPanelDelegate(object):
         start_row.add_spacing(5)
         start_row.add(self.start_button)
         start_row.add_spacing(15)
-        start_row.add(self.start_si_button)
+        #start_row.add(self.start_si_button)
+        start_row.add(ui.create_label_widget('COMING SOON: MultiEELS Spectrum Imaging'))
         start_row.add_spacing(5)
         start_row.add_stretch()
 
