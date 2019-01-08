@@ -276,7 +276,7 @@ class MultiEELS(object):
                      'end_ev': end_ev,
                      'line_number': line_number,
                      'flyback_pixels': flyback_pixels}
-            data_dict = {'data_element': data_element, 'parameters': parms}
+            data_dict = {'data_element': data_element, 'parameters': parms, 'settings': self.__active_settings}
             self.__queue.put(data_dict)
             del data_element
             del data_dict
@@ -318,6 +318,7 @@ class MultiEELS(object):
         self.shift_x(0)
         self.adjust_focus(0)
         self.__queue.join()
+        del new_data_listener
         if self.__active_settings['stitch_spectra']:
             raise NotImplementedError
 #            crop_ranges = self.get_stitch_ranges(multi_eels_data['data'])
@@ -327,6 +328,7 @@ class MultiEELS(object):
         else:
             data_element_list = []
             parameter_list = []
+            settings_list = []
             for i in range(len(data_dict_list)):
                 data_element = data_dict_list[i]['data_element']
                 data_element['data'] = np.squeeze(data_element['data'])
@@ -334,9 +336,10 @@ class MultiEELS(object):
                 data_element['collection_dimension_count'] = 0
                 data_element_list.append(data_element)
                 parameter_list.append(data_dict_list[i]['parameters'])
+                settings_list.append(data_dict_list[i]['settings'])
 
             multi_eels_data = {'data_element_list' : data_element_list, 'parameter_list': parameter_list,
-                               'stitched_data': False}
+                               'settings_list': settings_list, 'stitched_data': False}
             return multi_eels_data
 
     def acquire_multi_eels_line(self, x_pixels, line_number, flyback_pixels=2, first_line=False, last_line=False):
@@ -536,7 +539,7 @@ class MultiEELS(object):
 #                        self.document_controller.display_data_item(data_item)
 #                    self.document_controller.queue_task(create_and_display_data_item)  # must occur on UI thread
         except Exception as e:
-            self.acquisition_state_changed_event.fire({"message": "exception", "content": str(e)})
+            self.acquisition_state_changed_event.fire({'message': 'exception', 'content': str(e)})
             import traceback
             traceback.print_stack()
             print(e)

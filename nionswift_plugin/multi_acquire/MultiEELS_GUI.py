@@ -120,16 +120,17 @@ class MultiEELSPanelDelegate(object):
                 xdata = ImportExportManager.convert_data_element_to_data_and_metadata(data_dict['data_element_list'][i])
                 if i == 0 and xdata.is_data_1d:
                     data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
-                                                                                        xdata,
-                                                                                        title='MultiEELS (stacked)')
+                                                                                          xdata,
+                                                                                          title='MultiEELS (stacked)')
                     display_item = self.__api.library._document_model.get_display_item_for_data_item(data_item._data_item)
                     new_data_item = data_item
                 else:
                     new_data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
-                                                                                xdata,
-                                                                                title='MultiEELS #{:d}'.format(index))
+                                                                            xdata,
+                                                                            title='MultiEELS #{:d}'.format(index))
                 metadata = new_data_item.metadata
-                metadata['MultiEELS'] = data_dict['parameter_list'][i]
+                metadata['MultiAcquire.parameters'] = data_dict['parameter_list'][i]
+                metadata['MultiAcquire.settings'] = data_dict['settings_list'][i]
                 new_data_item.set_metadata(metadata)
                 if display_item:
                     display_item.append_display_data_channel_for_data_item(new_data_item._data_item)
@@ -137,9 +138,10 @@ class MultiEELSPanelDelegate(object):
                     end_ev = data_dict['parameter_list'][i]['end_ev']
                     display_layers.append({'label': '#{:d}: {:g}-{:2g} eV'.format(index, start_ev, end_ev),
                                            'data_index': i,
+                                          # 'stroke_color': ColorCycle.get_next_color(),
                                            'fill_color': ColorCycle.get_next_color()})
             if display_item:
-                display_item.display_layers = display_layers
+                display_item.display_layers = display_layers.reverse()
                 display_item.set_display_property("legend_position", "top-right")
                 display_item.title = 'MultiEELS (stacked)'
 
@@ -211,10 +213,13 @@ class MultiEELSPanelDelegate(object):
                     data_element['data'] = line_data[np.newaxis, ...]
                     data_element['collection_dimension_count'] = 2
                     data_element['spatial_calibrations'] = self.MultiEELS.scan_calibrations[0:1] + spatial_calibrations
+                    metadata = data_element.get('metadata', {})
+                    metadata['MultiAcquire.parameters'] = data_dict['parameters']
+                    metadata['MultiAcquire.settings'] = data_dict['settings']
                     data_element['metadata'] = data_dict['parameters']
                     new_xdata = ImportExportManager.convert_data_element_to_data_and_metadata(data_element)
-                    title = 'MultiEELS (stitched)' if data_dict.get('stitched_data') else 'MultiEELS #{:d}'.format(
-                                                                                                                index)
+                    title = ('MultiAcquire (stitched)' if data_dict.get('stitched_data') else
+                             'MultiAcquire #{:d}'.format(index))
                     data_item_ready_event = threading.Event()
                     new_data_item = None
                     def create_data_item():
