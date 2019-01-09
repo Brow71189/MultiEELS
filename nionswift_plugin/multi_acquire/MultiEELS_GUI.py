@@ -83,6 +83,9 @@ class MultiEELSPanelDelegate(object):
 #        self.MultiEELS.on_low_level_parameter_changed = low_level_parameter_changed
         self.__acquisition_state_changed_event_listener = self.MultiEELS.acquisition_state_changed_event.listen(self.acquisition_state_changed)
         self.__multi_eels_parameters_changed_event_listener = self.MultiEELS.spectrum_parameters.parameters_changed_event.listen(self.spectrum_parameters_changed)
+        self.__settings_changed_event_listener = None
+        self.__component_registered_event_listener = None
+        self.__component_unregistered_event_listener = None
         self.__new_data_ready_event_listener = None
         self.stem_controller = None
         self.EELScam = None
@@ -118,32 +121,45 @@ class MultiEELSPanelDelegate(object):
             for i in range(len(data_dict['data_element_list'])):
                 index = data_dict['parameter_list'][i]['index']
                 xdata = ImportExportManager.convert_data_element_to_data_and_metadata(data_dict['data_element_list'][i])
-                if i == 0 and xdata.is_data_1d:
+                start_ev = data_dict['parameter_list'][i]['start_ev']
+                end_ev = data_dict['parameter_list'][i]['end_ev']
+                number_frames = data_dict['parameter_list'][i]['frames']
+                exposure_ms = data_dict['parameter_list'][i]['exposure_ms']
+                data_item = None
+                if i == 0 and xdata.datum_dimension_count == 1:
                     data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
-                                                                                          xdata,
-                                                                                          title='MultiEELS (stacked)')
+                                                                        xdata,
+                                                                        title='MultiAcquire (stacked)')
                     display_item = self.__api.library._document_model.get_display_item_for_data_item(data_item._data_item)
-                    new_data_item = data_item
-                else:
-                    new_data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
-                                                                            xdata,
-                                                                            title='MultiEELS #{:d}'.format(index))
+                    #new_data_item = data_item
+                #else:
+                new_data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
+                                    xdata,
+                                    title='MultiAcquire #{:d}: {:g}-{:g} eV, {:g}x{:g} ms'.format(index+1,
+                                                                                                  start_ev,
+                                                                                                  end_ev,
+                                                                                                  number_frames,
+                                                                                                  exposure_ms))
                 metadata = new_data_item.metadata
                 metadata['MultiAcquire.parameters'] = data_dict['parameter_list'][i]
                 metadata['MultiAcquire.settings'] = data_dict['settings_list'][i]
                 new_data_item.set_metadata(metadata)
                 if display_item:
-                    display_item.append_display_data_channel_for_data_item(new_data_item._data_item)
+                    display_item.append_display_data_channel_for_data_item(data_item._data_item if data_item else new_data_item._data_item)
                     start_ev = data_dict['parameter_list'][i]['start_ev']
                     end_ev = data_dict['parameter_list'][i]['end_ev']
-                    display_layers.append({'label': '#{:d}: {:g}-{:2g} eV'.format(index, start_ev, end_ev),
+                    display_layers.append({'label': '#{:d}: {:g}-{:g} eV, {:g}x{:g} ms'.format(index+1,
+                                                                                               start_ev,
+                                                                                               end_ev,
+                                                                                               number_frames,
+                                                                                               exposure_ms),
                                            'data_index': i,
-                                          # 'stroke_color': ColorCycle.get_next_color(),
-                                           'fill_color': ColorCycle.get_next_color()})
+                                           'stroke_color': ColorCycle.get_next_color(),
+                                           'fill_color':None})
             if display_item:
-                display_item.display_layers = display_layers.reverse()
-                display_item.set_display_property("legend_position", "top-right")
-                display_item.title = 'MultiEELS (stacked)'
+                display_item.display_layers = display_layers
+                display_item.set_display_property('legend_position', 'top-right')
+                display_item.title = 'MultiAcquire (stacked)'
 
     def acquisition_state_changed(self, info_dict):
         if info_dict.get('message') == 'start':
@@ -206,6 +222,10 @@ class MultiEELSPanelDelegate(object):
                 line_number = data_dict['parameters']['line_number']
                 data_element = data_dict['data_element']
                 line_data = data_element['data']
+                start_ev = data_dict['parameters']['start_ev']
+                end_ev = data_dict['parameters']['end_ev']
+                number_frames = data_dict['parameters']['frames']
+                exposure_ms = data_dict['parameters']['exposure_ms']
                 print('got data from display queue')
                 if not self.result_data_items.get(index):
                     print('creating new data item')
@@ -219,7 +239,8 @@ class MultiEELSPanelDelegate(object):
                     data_element['metadata'] = data_dict['parameters']
                     new_xdata = ImportExportManager.convert_data_element_to_data_and_metadata(data_element)
                     title = ('MultiAcquire (stitched)' if data_dict.get('stitched_data') else
-                             'MultiAcquire #{:d}'.format(index))
+                             'MultiAcquire #{:d}: {:g}-{:g} eV, {:g}x{:g} ms'.format(index+1, start_ev, end_ev,
+                                                                                     number_frames, exposure_ms))
                     data_item_ready_event = threading.Event()
                     new_data_item = None
                     def create_data_item():
@@ -332,11 +353,11 @@ class MultiEELSPanelDelegate(object):
 
         def start_clicked():
             self.stem_controller = Registry.get_component('stem_controller')
-            self.EELScam = self.stem_controller.eels_camera
-            self.superscan = self.stem_controller.scan_controller
+            #self.EELScam = self.stem_controller.eels_camera
+            #self.superscan = self.stem_controller.scan_controller
             self.MultiEELS.stem_controller = self.stem_controller
             #self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
-            self.MultiEELS.camera = self.EELScam
+            self.MultiEELS.camera = self.camera_choice_combo_box.current_item
             #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
             #self.MultiEELS.settings['x_shift_delay'] = 1
             def run_multi_eels():
@@ -352,11 +373,11 @@ class MultiEELSPanelDelegate(object):
                 self.MultiEELS.abort_event.set()
             else:
                 self.stem_controller = Registry.get_component('stem_controller')
-                self.EELScam = self.stem_controller.eels_camera
+                #self.EELScam = self.stem_controller.eels_camera
                 self.superscan = self.stem_controller.scan_controller
                 self.MultiEELS.stem_controller = self.stem_controller
                 #self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
-                self.MultiEELS.camera = self.EELScam
+                self.MultiEELS.camera = self.camera_choice_combo_box.current_item
                 self.MultiEELS.superscan = self.superscan
                 #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
                 #self.MultiEELS.settings['x_shift_delay'] = 1
@@ -373,6 +394,9 @@ class MultiEELSPanelDelegate(object):
             if not self.settings_window_open:
                 self.settings_window_open = True
                 self.show_config_box()
+
+        def camera_changed(current_item):
+            self.MultiEELS.settings['camera_hardware_source_id'] = current_item.hardware_source_id
 
 #        def change_parameters_button_clicked():
 #            if not self.parameters_window_open:
@@ -420,6 +444,23 @@ class MultiEELSPanelDelegate(object):
         add_remove_parameters_row.add_spacing(20)
         add_remove_parameters_row.add_stretch()
 
+        camera_choice_row = ui.create_row_widget()
+        self.camera_choice_combo_box = ui.create_combo_box_widget(item_text_getter=lambda camera: getattr(camera, 'display_name'))
+        self.camera_choice_combo_box.on_current_item_changed = camera_changed
+        camera_choice_row.add_spacing(5)
+        camera_choice_row.add_stretch()
+        camera_choice_row.add(ui.create_label_widget('Camera: '))
+        camera_choice_row.add(self.camera_choice_combo_box)
+        camera_choice_row.add_spacing(5)
+        self.update_camera_list()
+        self.update_current_camera()
+        self.__settings_changed_event_listener = self.MultiEELS.settings.settings_changed_event.listen(self.update_current_camera)
+        def component_changed(component, component_types):
+            if 'camera_hardware_source' in component_types:
+                self.update_camera_list()
+        self.__component_registered_event_listener = Registry.listen_component_registered_event(component_changed)
+        self.__component_unregistered_event_listener = Registry.listen_component_unregistered_event(component_changed)
+
         self.start_button = ui.create_push_button_widget('Start MultiEELS')
         self.start_button.on_clicked = start_clicked
         self.start_si_button = ui.create_push_button_widget('Start MultiEELS spectrum image')
@@ -446,11 +487,28 @@ class MultiEELSPanelDelegate(object):
         column.add(self.parameter_label_column)
         column.add_spacing(5)
         column.add(add_remove_parameters_row)
+        column.add_spacing(5)
+        column.add(camera_choice_row)
         column.add_spacing(15)
         column.add(start_row)
         column.add_spacing(5)
         column.add_stretch()
         return column
+
+    def update_camera_list(self):
+        cameras = list(Registry.get_components_by_type('camera_hardware_source'))
+        self.camera_choice_combo_box.items = cameras
+        self.update_current_camera()
+
+    def update_current_camera(self):
+        current_camera_name = self.MultiEELS.settings['camera_hardware_source_id']
+        for camera in self.camera_choice_combo_box.items:
+            if camera.hardware_source_id == current_camera_name:
+                break
+        else:
+            self.MultiEELS.settings['camera_hardware_source_id'] = self.camera_choice_combo_box.current_item.hardware_source_id
+            return
+        self.camera_choice_combo_box.current_item = camera
 
     def create_parameter_label_line(self, spectrum_parameters):
         row = self.ui.create_row_widget()
@@ -566,7 +624,6 @@ class MultiEELSPanelDelegate(object):
         dc = self.document_controller._document_controller
 
         class ConfigDialog(Dialog.ActionDialog):
-
             def __init__(self, ui, MultiEELSGUI):
                 super(ConfigDialog, self).__init__(ui)
                 def report_window_close():
@@ -651,6 +708,9 @@ class MultiEELSPanelDelegate(object):
                 def bin_1D_checkbox_changed(check_state):
                     MultiEELSGUI.MultiEELS.settings['bin_spectra'] = check_state == 'checked'
 
+                def sum_frames_checkbox_changed(check_state):
+                    MultiEELSGUI.MultiEELS.settings['sum_frames'] = check_state == 'checked'
+
                 def saturation_value_finished(text):
                     try:
                         newvalue = float(text)
@@ -682,6 +742,7 @@ class MultiEELSPanelDelegate(object):
                 align_y_checkbox = self.ui.create_check_box_widget('Y-align spectra ')
                 auto_dark_subtract_checkbox = self.ui.create_check_box_widget('Auto dark subtraction ')
                 bin_1D_checkbox = self.ui.create_check_box_widget('Bin data in y direction ')
+                sum_frames_checkbox = self.ui.create_check_box_widget('Sum frames')
                 saturation_value_label = self.ui.create_label_widget('Camera saturation value: ')
                 saturation_value_field = self.ui.create_line_edit_widget()
                 blanker_label = self.ui.create_label_widget('Blanker control name: ')
@@ -728,6 +789,8 @@ class MultiEELSPanelDelegate(object):
                 row4.add(bin_1D_checkbox)
                 row4.add_spacing(20)
                 row4.add(auto_dark_subtract_checkbox)
+                row4.add_spacing(20)
+                row4.add(sum_frames_checkbox)
                 #row4.add(saturation_value_label)
                 #row4.add(saturation_value_field)
                 row4.add_spacing(5)
@@ -760,6 +823,7 @@ class MultiEELSPanelDelegate(object):
                 #align_y_checkbox.on_check_state_changed = align_y_checkbox_changed
                 auto_dark_subtract_checkbox.on_check_state_changed = auto_dark_subtract_checkbox_changed
                 bin_1D_checkbox.on_check_state_changed = bin_1D_checkbox_changed
+                sum_frames_checkbox.on_check_state_changed = sum_frames_checkbox_changed
                 x_shifter_field.on_editing_finished = x_shifter_finished
                 y_shifter_field.on_editing_finished = y_shifter_finished
                 x_shift_strength_field.on_editing_finished = x_shift_strength_finished
@@ -779,7 +843,8 @@ class MultiEELSPanelDelegate(object):
                                         'blanker_delay': blanker_delay_field})
 
                 self.checkboxes.update({'auto_dark_subtract': auto_dark_subtract_checkbox,
-                                        'bin_spectra': bin_1D_checkbox})
+                                        'bin_spectra': bin_1D_checkbox,
+                                        'sum_frames': sum_frames_checkbox})
 
                 self.settings_changed()
 

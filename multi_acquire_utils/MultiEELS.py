@@ -14,6 +14,8 @@ from nion.instrumentation.scan_base import RecordTask
 import logging
 import queue
 import copy
+import os
+import json
 
 try:
     import _superscan
@@ -35,10 +37,17 @@ class MultiEELSSettings(dict):
             self.settings_changed_event.fire()
 
     def __copy__(self):
-        return super().copy()
+        return MultiEELSSettings(super().copy())
 
     def __deepcopy__(self, memo):
-        return copy.deepcopy(super().copy())
+        return MultiEELSSettings(copy.deepcopy(super().copy()))
+
+    def copy(self):
+        return self.__copy__()
+
+    def update(self, *args, **kwargs):
+        super().update(*args, **kwargs)
+        self.settings_changed_event.fire()
 
 class MultiEELSParameters(list):
     def __init__(self, *args, **kwargs):
@@ -65,6 +74,9 @@ class MultiEELSParameters(list):
     def __deepcopy__(self, memo):
         return copy.deepcopy(super().copy())
 
+    def copy(self):
+        return self.__copy__()
+
 class MultiEELS(object):
     def __init__(self, **kwargs):
         self.spectrum_parameters = MultiEELSParameters(
@@ -76,7 +88,7 @@ class MultiEELS(object):
                          'y_units_per_px': 0.00081, 'blanker': 'C_Blank', 'x_shift_delay': 0.05, 'y_shift_delay': 0.05,
                          'focus': '', 'focus_delay': 0, 'saturation_value': 12000, 'y_align': True,
                          'stitch_spectra': False, 'auto_dark_subtract': False, 'bin_spectra': True,
-                         'blanker_delay': 0.05})
+                         'blanker_delay': 0.05, 'sum_frames': True, 'camera_hardware_source_id': ''})
         self.on_low_level_parameter_changed = None
         self.stem_controller = None
         self.camera = None
@@ -94,6 +106,30 @@ class MultiEELS(object):
         self.__active_settings = self.settings
         self.__active_spectrum_parameters = self.spectrum_parameters
         self.abort_event = threading.Event()
+        self.__savepath = os.path.join(os.path.expanduser('~'), 'MultiAcquire')
+        os.makedirs(self.__savepath, exist_ok=True)
+        self.load_settings()
+        self.load_parameters()
+        self.__settings_changed_event_listener = self.settings.settings_changed_event.listen(self.save_settings)
+        self.__spectrum_parameters_changed_event_listener = self.spectrum_parameters.parameters_changed_event.listen(self.save_parameters)
+
+    def save_settings(self):
+        with open(os.path.join(self.__savepath, 'settings.json'), 'w+') as f:
+            json.dump(self.settings, f)
+
+    def load_settings(self):
+        if os.path.isfile(os.path.join(self.__savepath, 'settings.json')):
+            with open(os.path.join(self.__savepath, 'settings.json')) as f:
+                self.settings.update(json.load(f))
+
+    def save_parameters(self):
+        with open(os.path.join(self.__savepath, 'spectrum_parameters.json'), 'w+') as f:
+            json.dump(self.spectrum_parameters, f)
+
+    def load_parameters(self):
+        if os.path.isfile(os.path.join(self.__savepath, 'spectrum_parameters.json')):
+            with open(os.path.join(self.__savepath, 'spectrum_parameters.json')) as f:
+                self.spectrum_parameters[:] = json.load(f)
 
     def add_spectrum(self, parameters=None):
         if parameters is None:
@@ -276,7 +312,7 @@ class MultiEELS(object):
                      'end_ev': end_ev,
                      'line_number': line_number,
                      'flyback_pixels': flyback_pixels}
-            data_dict = {'data_element': data_element, 'parameters': parms, 'settings': self.__active_settings}
+            data_dict = {'data_element': data_element, 'parameters': parms, 'settings': dict(self.__active_settings)}
             self.__queue.put(data_dict)
             del data_element
             del data_dict
@@ -332,7 +368,9 @@ class MultiEELS(object):
             for i in range(len(data_dict_list)):
                 data_element = data_dict_list[i]['data_element']
                 data_element['data'] = np.squeeze(data_element['data'])
-                data_element['spatial_calibrations'].pop(0)
+                if not self.__active_settings['sum_frames'] and data_dict_list[i]['parameters']['frames'] < 2:
+                    data_element['is_sequence'] = False
+                data_element['spatial_calibrations'].pop(0 if self.__active_settings['sum_frames'] else 1)
                 data_element['collection_dimension_count'] = 0
                 data_element_list.append(data_element)
                 parameter_list.append(data_dict_list[i]['parameters'])
@@ -427,17 +465,26 @@ class MultiEELS(object):
                     flyback_pixels = data_dict['parameters']['flyback_pixels']
                     data = data[flyback_pixels:, ...]
                     # sum along frames axis
-                    data = np.sum(data, axis=1)
+                    if self.__active_settings['sum_frames']:
+                        data = np.sum(data, axis=1)
+                    # make frames axis the sequence axis
+                    else:
+                        data = np.swapaxes(data, 0, 1)
                     # put it back
                     data_element['data'] = data
                     # create correct data descriptors
-                    data_element['is_sequence'] = False
+                    data_element['is_sequence'] = False if self.__active_settings['sum_frames'] else True
                     data_element['collection_dimension_count'] = 1
                     data_element['datum_dimension_count'] = 1 if self.__active_settings['bin_spectra'] else 2
                     # update calibrations
                     spatial_calibrations = [self.scan_calibrations[1].copy()]
-                    if len(old_spatial_calibrations) == len(data.shape):
+                    # check if raw data had correct number of calibrations, if not default to correct number of empty
+                    # calibrations to prevent errors
+                    if len(old_spatial_calibrations) == (len(data.shape) if self.__active_settings['sum_frames'] else
+                                                         len(data.shape)-1):
                         spatial_calibrations.extend(old_spatial_calibrations[1:])
+                        if not self.__active_settings['sum_frames']:
+                            spatial_calibrations.insert(0, {'offset': 0, 'scale': 1, 'units': ''})
                     else:
                         spatial_calibrations.extend([{'offset': 0, 'scale': 1, 'units': ''}
                                                      for i in range(len(data.shape)-1)])
