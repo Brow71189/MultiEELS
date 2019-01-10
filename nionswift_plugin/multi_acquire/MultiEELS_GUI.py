@@ -83,6 +83,7 @@ class MultiEELSPanelDelegate(object):
 #        self.MultiEELS.on_low_level_parameter_changed = low_level_parameter_changed
         self.__acquisition_state_changed_event_listener = self.MultiEELS.acquisition_state_changed_event.listen(self.acquisition_state_changed)
         self.__multi_eels_parameters_changed_event_listener = self.MultiEELS.spectrum_parameters.parameters_changed_event.listen(self.spectrum_parameters_changed)
+        self.__progress_updated_event_listener = self.MultiEELS.progress_updated_event.listen(self.update_progress_bar)
         self.__settings_changed_event_listener = None
         self.__component_registered_event_listener = None
         self.__component_unregistered_event_listener = None
@@ -347,6 +348,14 @@ class MultiEELSPanelDelegate(object):
 #                threading.Thread(target=self.__close_data_item_refs, daemon=True).start()
 #        self.__api.queue_task(create_or_update_data_items)
 
+    def update_progress_bar(self, minimum, maximum, value):
+        if self.progress_bar:
+            def update():
+                self.progress_bar.minimum = minimum
+                self.progress_bar.maximum = maximum
+                self.progress_bar.value = value
+            self.__api.queue_task(update)
+
     def create_panel_widget(self, ui, document_controller):
         self.ui = ui
         self.document_controller = document_controller
@@ -403,14 +412,31 @@ class MultiEELSPanelDelegate(object):
 #                self.parameters_window_open = True
 #                self.show_change_parameters_box()
 
-        change_parameters_row = ui.create_row_widget()
+        camera_choice_row = ui.create_row_widget()
         settings_button = ui.create_push_button_widget('Settings...')
         settings_button.on_clicked = settings_button_clicked
+        self.camera_choice_combo_box = ui.create_combo_box_widget(item_text_getter=lambda camera: getattr(camera, 'display_name'))
+        self.camera_choice_combo_box.on_current_item_changed = camera_changed
+        camera_choice_row.add_spacing(5)
+        camera_choice_row.add(ui.create_label_widget('Camera: '))
+        camera_choice_row.add(self.camera_choice_combo_box)
+        camera_choice_row.add_stretch()
+        camera_choice_row.add_spacing(5)
+        camera_choice_row.add(settings_button)
+        camera_choice_row.add_spacing(5)
+        self.update_camera_list()
+        self.update_current_camera()
+        self.__settings_changed_event_listener = self.MultiEELS.settings.settings_changed_event.listen(self.update_current_camera)
+        def component_changed(component, component_types):
+            if 'camera_hardware_source' in component_types:
+                self.update_camera_list()
+        self.__component_registered_event_listener = Registry.listen_component_registered_event(component_changed)
+        self.__component_unregistered_event_listener = Registry.listen_component_unregistered_event(component_changed)
+
+        change_parameters_row = ui.create_row_widget()
         change_parameters_row.add_spacing(5)
         change_parameters_row.add(ui.create_label_widget('MultiAcquire parameters:'))
         change_parameters_row.add_stretch()
-        change_parameters_row.add_spacing(5)
-        change_parameters_row.add(settings_button)
         change_parameters_row.add_spacing(20)
 
         parameter_description_row = ui.create_row_widget()
@@ -444,22 +470,12 @@ class MultiEELSPanelDelegate(object):
         add_remove_parameters_row.add_spacing(20)
         add_remove_parameters_row.add_stretch()
 
-        camera_choice_row = ui.create_row_widget()
-        self.camera_choice_combo_box = ui.create_combo_box_widget(item_text_getter=lambda camera: getattr(camera, 'display_name'))
-        self.camera_choice_combo_box.on_current_item_changed = camera_changed
-        camera_choice_row.add_spacing(5)
-        camera_choice_row.add_stretch()
-        camera_choice_row.add(ui.create_label_widget('Camera: '))
-        camera_choice_row.add(self.camera_choice_combo_box)
-        camera_choice_row.add_spacing(5)
-        self.update_camera_list()
-        self.update_current_camera()
-        self.__settings_changed_event_listener = self.MultiEELS.settings.settings_changed_event.listen(self.update_current_camera)
-        def component_changed(component, component_types):
-            if 'camera_hardware_source' in component_types:
-                self.update_camera_list()
-        self.__component_registered_event_listener = Registry.listen_component_registered_event(component_changed)
-        self.__component_unregistered_event_listener = Registry.listen_component_unregistered_event(component_changed)
+        progress_row = ui.create_row_widget()
+        progress_row.add_spacing(5)
+        progress_row.add_stretch()
+        self.progress_bar = ui.create_progress_bar_widget(0, 100, 50)
+        progress_row.add(self.progress_bar)
+        progress_row.add_spacing(5)
 
         self.start_button = ui.create_push_button_widget('Start MultiEELS')
         self.start_button.on_clicked = start_clicked
@@ -475,6 +491,9 @@ class MultiEELSPanelDelegate(object):
         start_row.add_stretch()
 
         column = ui.create_column_widget()
+        column.add_spacing(5)
+        column.add(camera_choice_row)
+        column.add_spacing(5)
         column.add(change_parameters_row)
         column.add_spacing(10)
         column.add(parameter_description_row)
@@ -488,7 +507,7 @@ class MultiEELSPanelDelegate(object):
         column.add_spacing(5)
         column.add(add_remove_parameters_row)
         column.add_spacing(5)
-        column.add(camera_choice_row)
+        column.add(progress_row)
         column.add_spacing(15)
         column.add(start_row)
         column.add_spacing(5)

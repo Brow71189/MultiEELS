@@ -69,10 +69,10 @@ class MultiEELSParameters(list):
         self.parameters_changed_event.fire()
 
     def __copy__(self):
-        return super().copy()
+        return MultiEELSParameters(super().copy())
 
     def __deepcopy__(self, memo):
-        return copy.deepcopy(super().copy())
+        return MultiEELSParameters(copy.deepcopy(super().copy()))
 
     def copy(self):
         return self.__copy__()
@@ -96,8 +96,10 @@ class MultiEELS(object):
         self.document_controller = None
         self.zeros = {'x': 0, 'y': 0, 'focus': 0}
         self.scan_calibrations = [{'offset': 0, 'scale': 1, 'units': ''}, {'offset': 0, 'scale': 1, 'units': ''}]
+        self.__progress_counter = 0
         self.acquisition_state_changed_event = Event.Event()
         self.new_data_ready_event = Event.Event()
+        self.progress_updated_event = Event.Event()
         self.__stop_processing_event = threading.Event()
         self.__queue = queue.Queue()
         self.__acquisition_finished_event = threading.Event()
@@ -151,7 +153,9 @@ class MultiEELS(object):
 
     def set_offset_x(self, index, offset_x):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
-        self.spectrum_parameters[index]['offset_x'] = offset_x
+        parameters = self.spectrum_parameters[index]
+        parameters['offset_x'] = offset_x
+        self.spectrum_parameters[index] = parameters
 #        if callable(self.on_low_level_parameter_changed):
 #            self.on_low_level_parameter_changed('spectrum_parameters')
 
@@ -161,7 +165,9 @@ class MultiEELS(object):
 
     def set_offset_y(self, index, offset_y):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
-        self.spectrum_parameters[index]['offset_y'] = offset_y
+        parameters = self.spectrum_parameters[index]
+        parameters['offset_y'] = offset_y
+        self.spectrum_parameters[index] = parameters
 #        if callable(self.on_low_level_parameter_changed):
 #            self.on_low_level_parameter_changed('spectrum_parameters')
 
@@ -171,7 +177,9 @@ class MultiEELS(object):
 
     def set_exposure_ms(self, index, exposure_ms):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
-        self.spectrum_parameters[index]['exposure_ms'] = exposure_ms
+        parameters = self.spectrum_parameters[index]
+        parameters['exposure_ms'] = exposure_ms
+        self.spectrum_parameters[index] = parameters
 #        if callable(self.on_low_level_parameter_changed):
 #            self.on_low_level_parameter_changed('spectrum_parameters')
 
@@ -181,7 +189,9 @@ class MultiEELS(object):
 
     def set_frames(self, index, frames):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
-        self.spectrum_parameters[index]['frames'] = frames
+        parameters = self.spectrum_parameters[index]
+        parameters['frames'] = frames
+        self.spectrum_parameters[index] = parameters
 #        if callable(self.on_low_level_parameter_changed):
 #            self.on_low_level_parameter_changed('spectrum_parameters')
 
@@ -222,6 +232,29 @@ class MultiEELS(object):
         else: # do not wait if nothing was done
             return
         time.sleep(self.__active_settings['blanker_delay'])
+
+    def increment_progress_counter(self, time):
+        self.__progress_counter += time
+        maximum = 0
+        if hasattr(self, 'scan_parameters'):
+            scan_size = self.scan_parameters['size']
+            flyback_pixels = self.superscan.flyback_pixels
+        else:
+            scan_size = (1, 1)
+            flyback_pixels = 0
+        for parameters in self.__active_spectrum_parameters:
+            maximum += (scan_size[1] + flyback_pixels) * parameters['frames'] * parameters['exposure_ms']
+        maximum *= scan_size[0]
+        if self.__active_settings['auto_dark_subtract']:
+            maximum *= 2
+        self.progress_updated_event.fire(0, maximum, self.__progress_counter)
+
+    def set_progress_counter(self, minimum, maximum, value):
+        self.__progress_counter = value
+        self.progress_updated_event.fire(minimum, maximum, value)
+
+    def reset_progress_counter(self):
+        self.set_progress_counter(0, 100, 0)
 
     def get_stitch_ranges(self, spectra):
         #result = np.array(())
@@ -288,6 +321,7 @@ class MultiEELS(object):
             success = False
             print('finished preparations in {:g} s'.format(time.time() - starttime))
             starttime = 0
+            # this loop is just there to prevent the acquisition from being aborted when using the simulator
             while not success:
                 try:
                     print('start sequence')
@@ -314,14 +348,18 @@ class MultiEELS(object):
                      'flyback_pixels': flyback_pixels}
             data_dict = {'data_element': data_element, 'parameters': parms, 'settings': dict(self.__active_settings)}
             self.__queue.put(data_dict)
+            self.increment_progress_counter(parameters['frames']*(number_pixels+flyback_pixels)*parameters['exposure_ms'])
             del data_element
             del data_dict
             print('finished acquisition')
 
     def acquire_multi_eels_spectrum(self):
         try:
+            if hasattr(self, 'scan_parameters'):
+                delattr(self, 'scan_parameters')
+            self.reset_progress_counter()
             self.__active_settings = copy.deepcopy(self.settings)
-            self.__active_spectrum_parameters = copy.copy(self.spectrum_parameters)
+            self.__active_spectrum_parameters = copy.deepcopy(self.spectrum_parameters)
             self.abort_event.clear()
             self.__acquisition_finished_event.clear()
             self.__process_and_send_data_thread = threading.Thread(target=self.process_and_send_data)
@@ -528,8 +566,9 @@ class MultiEELS(object):
 
     def acquire_multi_eels_spectrum_image(self):
         self.__active_settings = copy.deepcopy(self.settings)
-        self.__active_spectrum_parameters = copy.copy(self.spectrum_parameters)
+        self.__active_spectrum_parameters = copy.deepcopy(self.spectrum_parameters)
         self.abort_event.clear()
+        self.reset_progress_counter()
         self.__acquisition_finished_event.clear()
         self.__process_and_send_data_thread = threading.Thread(target=self.process_and_send_data)
         self.__process_and_send_data_thread.start()
@@ -599,4 +638,6 @@ class MultiEELS(object):
             self.shift_y(0)
             self.shift_x(0)
             self.adjust_focus(0)
+            if hasattr(self, 'scan_parameters'):
+                delattr(self, 'scan_parameters')
             logging.debug("end")
