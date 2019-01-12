@@ -153,9 +153,10 @@ class MultiEELS(object):
 
     def set_offset_x(self, index, offset_x):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
-        parameters = self.spectrum_parameters[index]
-        parameters['offset_x'] = offset_x
-        self.spectrum_parameters[index] = parameters
+        parameters = self.spectrum_parameters[index].copy()
+        if offset_x != parameters.get('offset_x'):
+            parameters['offset_x'] = offset_x
+            self.spectrum_parameters[index] = parameters
 #        if callable(self.on_low_level_parameter_changed):
 #            self.on_low_level_parameter_changed('spectrum_parameters')
 
@@ -165,9 +166,10 @@ class MultiEELS(object):
 
     def set_offset_y(self, index, offset_y):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
-        parameters = self.spectrum_parameters[index]
-        parameters['offset_y'] = offset_y
-        self.spectrum_parameters[index] = parameters
+        parameters = self.spectrum_parameters[index].copy()
+        if offset_y != parameters.get('offset_y'):
+            parameters['offset_y'] = offset_y
+            self.spectrum_parameters[index] = parameters
 #        if callable(self.on_low_level_parameter_changed):
 #            self.on_low_level_parameter_changed('spectrum_parameters')
 
@@ -177,9 +179,10 @@ class MultiEELS(object):
 
     def set_exposure_ms(self, index, exposure_ms):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
-        parameters = self.spectrum_parameters[index]
-        parameters['exposure_ms'] = exposure_ms
-        self.spectrum_parameters[index] = parameters
+        parameters = self.spectrum_parameters[index].copy()
+        if exposure_ms != parameters.get('exposure_ms'):
+            parameters['exposure_ms'] = exposure_ms
+            self.spectrum_parameters[index] = parameters
 #        if callable(self.on_low_level_parameter_changed):
 #            self.on_low_level_parameter_changed('spectrum_parameters')
 
@@ -189,9 +192,10 @@ class MultiEELS(object):
 
     def set_frames(self, index, frames):
         assert index < len(self.spectrum_parameters), 'Index {:.0f} > then number of spectra defined. Add a new spectrum before changing its parameters!'.format(index)
-        parameters = self.spectrum_parameters[index]
-        parameters['frames'] = frames
-        self.spectrum_parameters[index] = parameters
+        parameters = self.spectrum_parameters[index].copy()
+        if frames != parameters.get('frames'):
+            parameters['frames'] = frames
+            self.spectrum_parameters[index] = parameters
 #        if callable(self.on_low_level_parameter_changed):
 #            self.on_low_level_parameter_changed('spectrum_parameters')
 
@@ -323,10 +327,14 @@ class MultiEELS(object):
             starttime = 0
             # this loop is just there to prevent the acquisition from being aborted when using the simulator
             while not success:
+                if self.abort_event.is_set():
+                    break
                 try:
                     print('start sequence')
                     starttime = time.time()
-                    data_element = self.camera.acquire_sequence(parameters['frames']*(number_pixels+flyback_pixels))[0]
+                    data_element = self.camera.acquire_sequence(parameters['frames']*(number_pixels+flyback_pixels))
+                    if data_element:
+                        data_element = data_element[0]
                     print('end sequence in {:g} s'.format(time.time() - starttime))
                 except Exception as e:
                     if str(e) == 'No simulator thread.':
@@ -337,12 +345,16 @@ class MultiEELS(object):
                 else:
                     success = True
 
-            end_ev = parameters['offset_x'] + (data_element.get('spatial_calibrations', [{}])[-1].get('scale', 0) *
+            if self.abort_event.is_set():
+                break
+
+            start_ev = data_element.get('spatial_calibrations', [{}])[-1].get('offset', 0)
+            end_ev = start_ev + (data_element.get('spatial_calibrations', [{}])[-1].get('scale', 0) *
                                                data_element.get('data').shape[-1])
             parms = {'index': parameters['index'],
                      'exposure_ms': parameters['exposure_ms'],
                      'frames': parameters['frames'],
-                     'start_ev': parameters['offset_x'],
+                     'start_ev': start_ev ,
                      'end_ev': end_ev,
                      'line_number': line_number,
                      'flyback_pixels': flyback_pixels}
@@ -352,6 +364,28 @@ class MultiEELS(object):
             del data_element
             del data_dict
             print('finished acquisition')
+
+    def cancel(self):
+        self.abort_event.set()
+        try:
+            self.camera.acquire_sequence_cancel()
+        except:
+            pass
+        # give it some time to finish processing
+        counter = 0
+        while not self.__queue.empty():
+            time.sleep(0.1)
+            if counter > 10:
+                break
+            counter += 1
+        # clear the queue to prevent deadlocks
+        try:
+            while True:
+                self.__queue.get(block=False)
+        except queue.Empty:
+            pass
+        else:
+            self.__queue.task_done()
 
     def acquire_multi_eels_spectrum(self):
         try:
@@ -376,16 +410,19 @@ class MultiEELS(object):
             if not callable(self.__active_settings['y_shifter']) and self.__active_settings['y_shifter']:
                 self.zeros['y'] = self.stem_controller.GetVal(self.__active_settings['y_shifter'])
             start_frame_parameters = self.camera.get_current_frame_parameters()
-            self.__acquire_multi_eels_data(1)
+            # also use flyback pixels here to make sure we get fresh images from the camera (they get removed
+            # automatically by "process_and_send_data")
+            self.__acquire_multi_eels_data(1, flyback_pixels=2)
             if self.__active_settings['auto_dark_subtract']:
                 self.blank_beam()
-                self.__acquire_multi_eels_data(1)
+                self.__acquire_multi_eels_data(1, flyback_pixels=2)
                 self.unblank_beam()
                 self.__queue.join()
                 for i in range(len(self.__active_spectrum_parameters)):
                     dark_data_dict = data_dict_list.pop(len(self.__active_spectrum_parameters))
                     data_dict_list[i]['data_element']['data'] -= dark_data_dict['data_element']['data']
         finally:
+            self.__acquisition_finished_event.set()
             self.acquisition_state_changed_event.fire({'message': 'end', 'description': 'single spectrum'})
         self.camera.set_current_frame_parameters(start_frame_parameters)
         self.shift_y(0)
@@ -406,6 +443,7 @@ class MultiEELS(object):
             for i in range(len(data_dict_list)):
                 data_element = data_dict_list[i]['data_element']
                 data_element['data'] = np.squeeze(data_element['data'])
+                # this makes sure we do not create a length 1 sequence
                 if not self.__active_settings['sum_frames'] and data_dict_list[i]['parameters']['frames'] < 2:
                     data_element['is_sequence'] = False
                 data_element['spatial_calibrations'].pop(0 if self.__active_settings['sum_frames'] else 1)
@@ -529,10 +567,11 @@ class MultiEELS(object):
                     data_element['spatial_calibrations'] = spatial_calibrations
                     counts_per_electron = data_element.get('properties', {}).get('counts_per_electron', 1)
                     exposure_ms = data_element.get('properties', {}).get('exposure', 1)
+                    _number_frames = 1 if self.__active_settings['sum_frames'] else number_frames
                     intensity_scale = (data_element.get('intensity_calibration', {}).get('scale', 1) /
                                        counts_per_electron /
                                        data_element.get('spatial_calibrations', [{}])[-1].get('scale', 1) /
-                                       exposure_ms / number_frames)
+                                       exposure_ms / _number_frames)
                     data_element['intensity_calibration'] = {'offset': 0, 'scale': intensity_scale, 'units': 'e/eV/s'}
 
                     self.new_data_ready_event.fire(data_dict)
@@ -608,12 +647,12 @@ class MultiEELS(object):
 #                scan_center_y = self.scan_parameters["fov_nm"]/self.number_lines*(line-self.number_lines/2)
 #                self.scan_parameters["center_nm"] = (scan_center_y, self.scan_parameters["center_nm"][1])
                 for line in range(self.number_lines):
+                    if self.abort_event.is_set():
+                        break
                     print(line)
                     starttime = time.time()
                     self.acquire_multi_eels_line(self.scan_parameters["size"][1], line, flyback_pixels=flyback_pixels, first_line=line==0)
                     print('acquired line in {:g} s'.format(time.time() - starttime))
-                    if self.abort_event.is_set():
-                        break
 #                    scan_height = scan_parameters["size"][0]
 #                    scan_width = scan_parameters["size"][1] + flyback_pixels
 #                    data_element = self.camera._hardware_source.acquire_sequence(scan_width * scan_height)
@@ -629,10 +668,11 @@ class MultiEELS(object):
             import traceback
             traceback.print_stack()
             print(e)
+            self.cancel()
             raise
         finally:
-            self.acquisition_state_changed_event.fire({'message': 'end', 'description': 'spectrum image'})
             self.__acquisition_finished_event.set()
+            self.acquisition_state_changed_event.fire({'message': 'end', 'description': 'spectrum image'})
             if _has_superscan:
                 _superscan.Scan_Settings_Property(_superscan.Scan_Settings_LineRepeat, _superscan.Scan_Property_Integer_Set(0))
             self.shift_y(0)
