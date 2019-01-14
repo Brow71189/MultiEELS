@@ -69,18 +69,7 @@ class MultiEELSPanelDelegate(object):
         self.api = api
         self.line_edit_widgets = {}
         self.push_button_widgets = {}
-        #self.label_widgets = {}
         self.MultiEELS = MultiEELS.MultiEELS()
-#        def low_level_parameter_changed(parameter):
-#            if parameter == 'added_spectrum':
-#                self.parameter_label_column.add(self.create_parameter_label_line(self.MultiEELS.spectrum_parameters[-1]))
-#            if parameter == 'removed_spectrum':
-#                self.parameter_label_column._widget.remove(self.parameter_label_column._widget.children[-1])
-#            if parameter == 'spectrum_parameters':
-#                for spectrum_parameters in self.MultiEELS.spectrum_parameters:
-#                    for name, field in self.line_edit_widgets[spectrum_parameters['index']].items():
-#                        field.text = '{:g}'.format(spectrum_parameters[name])
-#        self.MultiEELS.on_low_level_parameter_changed = low_level_parameter_changed
         self.__acquisition_state_changed_event_listener = self.MultiEELS.acquisition_state_changed_event.listen(self.acquisition_state_changed)
         self.__multi_eels_parameters_changed_event_listener = self.MultiEELS.spectrum_parameters.parameters_changed_event.listen(self.spectrum_parameters_changed)
         self.__progress_updated_event_listener = self.MultiEELS.progress_updated_event.listen(self.update_progress_bar)
@@ -93,7 +82,7 @@ class MultiEELSPanelDelegate(object):
         self.superscan = None
         self.settings_window_open = False
         self.parameters_window_open = False
-        self.parameter_label_column = None
+        self.parameter_column = None
         self.result_data_items = {}
         self.__result_data_items_refs = []
         self.__acquisition_running = False
@@ -104,9 +93,14 @@ class MultiEELSPanelDelegate(object):
 
     def spectrum_parameters_changed(self):
         parameter_list = self.MultiEELS.spectrum_parameters.copy()
-        self.parameter_label_column._widget.remove_all()
-        for spectrum_parameters in parameter_list:
-            self.parameter_label_column.add(self.create_parameter_label_line(spectrum_parameters))
+        if len(parameter_list) != len(self.parameter_column._widget.children):
+            self.parameter_column._widget.remove_all()
+            for spectrum_parameters in parameter_list:
+                self.parameter_column.add(self.create_parameter_line(spectrum_parameters))
+        else:
+            for spectrum_parameters in parameter_list:
+                self.update_parameter_line(spectrum_parameters)
+
 
     def create_result_data_item(self, data_dict):
         if data_dict.get('stitched_data'):
@@ -281,77 +275,6 @@ class MultiEELSPanelDelegate(object):
                 self.__display_queue.task_done()
                 print('displayed line {:.0f}'.format(line_number))
 
-
-#    def update_result(self, data_dict):
-#        print('got from disp queue')
-#        def create_or_update_data_items():
-#            if not self.result_data_items:
-#                print('here')
-#                self.result_data_items = []
-#                self.__result_data_items_refs = []
-#                xdata_list = data_dict.pop('data')
-#                for i in range(len(xdata_list)):
-#                    xdata = xdata_list[i]
-#                    new_xdata = xd.reshape(xdata, (-1,) + xdata.data_shape)
-#                    dimensional_calibrations = new_xdata.dimensional_calibrations
-#                    dimensional_calibrations[0] = Calibration.Calibration(**self.MultiEELS.scan_calibrations[0])
-#                    if data_dict.get('stitched_data'):
-#                        new_data_item = self.__api.library.create_data_item_from_data_and_metadata(new_xdata,
-#                                                                                        title='MultiEELS (stitched)')
-#                        metadata = xdata.metadata
-#                        metadata['MultiEELS'] = data_dict['parameters']
-#                    else:
-#                        parms = data_dict['parameters'][i]
-#                        new_data_item = self.__api.library.create_data_item_from_data_and_metadata(new_xdata,
-#                                                                      title='MultiEELS #{:d}'.format(parms['index']))
-#                        metadata = xdata.metadata
-#                        metadata['MultiEELS'] = data_dict['parameters'][i]
-#
-#                    new_data_item.set_metadata(metadata)
-#                    new_data_item_ref = self.__api.library.data_ref_for_data_item(new_data_item)
-#                    new_data_item_ref.__enter__()
-#                    self.__result_data_items_refs.append(new_data_item_ref)
-#                    #new_data_item_ref = None
-#                    self.result_data_items.append(new_data_item)
-#                    #new_data_item = None
-##                    try:
-##                        while True:
-##                            xdata.decrement_data_ref_count()
-##                    except AssertionError:
-##                        pass
-#                #xdata_list = None
-#            else:
-#                print('here2')
-#                xdata_list = data_dict.pop('data')
-#                for i in range(len(xdata_list)):
-#                    new_xdata = xd.concatenate([self.result_data_items[i].xdata,
-#                                                xd.reshape(xdata_list[i], (-1,) + xdata_list[i].data_shape)], axis=0)
-#                    #old_xdata = self.result_data_items[i].xdata
-#                    self.result_data_items[i].set_data_and_metadata(new_xdata)
-#                    #new_xdata = None
-#                    new_data_item_ref = self.__api.library.data_ref_for_data_item(self.result_data_items[i])
-#                    new_data_item_ref.__enter__()
-#                    self.__result_data_items_refs[i].__exit__(None, None, None)
-#                    self.__result_data_items_refs[i] = new_data_item_ref
-#                    #new_data_item_ref = None
-##                    try:
-##                        while True:
-##                            old_xdata.decrement_data_ref_count()
-##                    except AssertionError:
-##                        pass
-##                    #old_xdata = None
-##                    try:
-##                        while True:
-##                            xdata_list[i].decrement_data_ref_count()
-##                    except AssertionError:
-##                        pass
-#                #xdata_list = None
-#            print('finished display')
-#            if data_dict.get('is_last_line'):
-#                #self.__close_data_item_refs()
-#                threading.Thread(target=self.__close_data_item_refs, daemon=True).start()
-#        self.__api.queue_task(create_or_update_data_items)
-
     def update_progress_bar(self, minimum, maximum, value):
         if self.progress_bar:
             def update():
@@ -369,13 +292,8 @@ class MultiEELSPanelDelegate(object):
                 self.MultiEELS.cancel()
             else:
                 self.stem_controller = Registry.get_component('stem_controller')
-                #self.EELScam = self.stem_controller.eels_camera
-                #self.superscan = self.stem_controller.scan_controller
                 self.MultiEELS.stem_controller = self.stem_controller
-                #self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
                 self.MultiEELS.camera = self.camera_choice_combo_box.current_item
-                #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
-                #self.MultiEELS.settings['x_shift_delay'] = 1
                 def run_multi_eels():
                     data_dict = self.MultiEELS.acquire_multi_eels_spectrum()
                     def create_and_display_data_item():
@@ -389,14 +307,10 @@ class MultiEELSPanelDelegate(object):
                 self.MultiEELS.cancel()
             else:
                 self.stem_controller = Registry.get_component('stem_controller')
-                #self.EELScam = self.stem_controller.eels_camera
                 self.superscan = self.stem_controller.scan_controller
                 self.MultiEELS.stem_controller = self.stem_controller
-                #self.camera = self.EELScam._hardware_source._CameraHardwareSource__camera_adapter.camera
                 self.MultiEELS.camera = self.camera_choice_combo_box.current_item
                 self.MultiEELS.superscan = self.superscan
-                #self.MultiEELS.settings['x_shifter'] = self.camera.set_energy_shift
-                #self.MultiEELS.settings['x_shift_delay'] = 1
                 self.result_data_items = {}
                 self.__new_data_ready_event_listener = self.MultiEELS.new_data_ready_event.listen(self.add_to_display_queue)
                 self.__data_processed_event.clear()
@@ -413,11 +327,6 @@ class MultiEELSPanelDelegate(object):
 
         def camera_changed(current_item):
             self.MultiEELS.settings['camera_hardware_source_id'] = current_item.hardware_source_id
-
-#        def change_parameters_button_clicked():
-#            if not self.parameters_window_open:
-#                self.parameters_window_open = True
-#                self.show_change_parameters_box()
 
         camera_choice_row = ui.create_row_widget()
         settings_button = ui.create_push_button_widget('Settings...')
@@ -505,12 +414,11 @@ class MultiEELSPanelDelegate(object):
         column.add_spacing(10)
         column.add(parameter_description_row)
         column.add_spacing(10)
-        self.parameter_label_column = ui.create_column_widget()
+        self.parameter_column = ui.create_column_widget()
         for spectrum_parameters in self.MultiEELS.spectrum_parameters:
-            line = self.create_parameter_label_line(spectrum_parameters)
-            self.parameter_label_column.add(line)
-            #column.add_spacing(10)
-        column.add(self.parameter_label_column)
+            line = self.create_parameter_line(spectrum_parameters)
+            self.parameter_column.add(line)
+        column.add(self.parameter_column)
         column.add_spacing(5)
         column.add(add_remove_parameters_row)
         column.add_spacing(5)
@@ -536,7 +444,14 @@ class MultiEELSPanelDelegate(object):
             return
         self.camera_choice_combo_box.current_item = camera
 
-    def create_parameter_label_line(self, spectrum_parameters):
+    def update_parameter_line(self, spectrum_parameters):
+        widgets = self.line_edit_widgets[spectrum_parameters['index']]
+        widgets['offset_x'].text = '{:g}'.format(spectrum_parameters['offset_x'])
+        widgets['offset_y'].text = '{:g}'.format(spectrum_parameters['offset_y'])
+        widgets['exposure_ms'].text = '{:g}'.format(spectrum_parameters['exposure_ms'])
+        widgets['frames'].text = '{:.0f}'.format(spectrum_parameters['frames'])
+
+    def create_parameter_line(self, spectrum_parameters):
         row = self.ui.create_row_widget()
         column = self.ui.create_column_widget()
         widgets = {}
@@ -578,74 +493,6 @@ class MultiEELSPanelDelegate(object):
 
         return column
 
-#    def create_spectrum_parameter_line(self, spectrum_parameters):
-#        column = self.ui.create_column_widget()
-#        row = self.ui.create_row_widget()
-#        widgets = {}
-#        descriptor_column = self.ui.create_column_widget()
-#        value_column = self.ui.create_column_widget()
-#
-#        descriptor_column.add_spacing(5)
-#        descriptor_column.add(self.ui.create_label_widget('Spectrum #:'))
-#        descriptor_column.add_spacing(5)
-#        descriptor_column.add(self.ui.create_label_widget('X offset (eV):'))
-#        descriptor_column.add_spacing(5)
-#        descriptor_column.add(self.ui.create_label_widget('Y offset (px):'))
-#        descriptor_column.add_spacing(5)
-#        descriptor_column.add(self.ui.create_label_widget('Exposure (ms):'))
-#        descriptor_column.add_spacing(5)
-#        descriptor_column.add(self.ui.create_label_widget('Frames:'))
-#        descriptor_column.add_spacing(5)
-#        descriptor_column.add_stretch()
-#
-#        spectrum_no = self.ui.create_label_widget(str(spectrum_parameters['index']))
-#
-#        offset_x = self.ui.create_line_edit_widget()
-#        offset_x.text = str(spectrum_parameters['offset_x'])
-#        offset_x.on_editing_finished = lambda text: self.MultiEELS.set_offset_x(spectrum_parameters['index'], float(text))
-#        widgets['offset_x'] = offset_x
-#
-#        offset_y = self.ui.create_line_edit_widget()
-#        offset_y.text = str(spectrum_parameters['offset_y'])
-#        offset_y.on_editing_finished = lambda text: self.MultiEELS.set_offset_y(spectrum_parameters['index'], float(text))
-#        widgets['offset_y'] = offset_y
-#
-#        exposure_ms = self.ui.create_line_edit_widget()
-#        exposure_ms.text = str(spectrum_parameters['exposure_ms'])
-#        exposure_ms.on_editing_finished = lambda text: self.MultiEELS.set_exposure_ms(spectrum_parameters['index'], float(text))
-#        widgets['exposure_ms'] = exposure_ms
-#
-#        frames = self.ui.create_line_edit_widget()
-#        frames.text = str(spectrum_parameters['frames'])
-#        frames.on_editing_finished = lambda text: self.MultiEELS.set_frames(spectrum_parameters['index'], int(text))
-#        widgets['frames'] = frames
-#
-#        value_column.add_spacing(5)
-#        value_column.add(spectrum_no)
-#        value_column.add_spacing(5)
-#        value_column.add(offset_x)
-#        value_column.add_spacing(1)
-#        value_column.add(offset_y)
-#        value_column.add_spacing(1)
-#        value_column.add(exposure_ms)
-#        value_column.add_spacing(1)
-#        value_column.add(frames)
-#        value_column.add_stretch()
-#
-#        row.add_spacing(5)
-#        row.add(descriptor_column)
-#        row.add_spacing(5)
-#        row.add(value_column)
-#        row.add_spacing(5)
-#        row.add_stretch()
-#
-#        self.line_edit_widgets[spectrum_parameters['index']] = widgets
-#
-#        column.add(row)
-#        column.add_spacing(12)
-#
-#        return column
-
     def show_config_box(self):
         dc = self.document_controller._document_controller
 
@@ -664,7 +511,6 @@ class MultiEELSPanelDelegate(object):
                 def x_shifter_finished(text):
                     newvalue = str(text)
                     MultiEELSGUI.MultiEELS.settings['x_shifter'] = newvalue
-                    #x_shift_strength_field.text = '{:g}'.format(MultiEELSGUI.MultiEELS.settings['x_shifter'])
 
                 def x_shift_strength_finished(text):
                     try:
@@ -679,7 +525,6 @@ class MultiEELSPanelDelegate(object):
                 def y_shifter_finished(text):
                     newvalue = str(text)
                     MultiEELSGUI.MultiEELS.settings['y_shifter'] = newvalue
-                    #x_shift_strength_field.text = '{:g}'.format(MultiEELSGUI.MultiEELS.settings['y_shifter'])
 
                 def y_shift_strength_finished(text):
                     try:
@@ -801,8 +646,6 @@ class MultiEELSPanelDelegate(object):
                 row2.add_stretch()
 
                 row3.add_spacing(5)
-                #row3.add(align_y_checkbox)
-                #row3.add_spacing(20)
                 row3.add(blanker_label)
                 row3.add(blanker_field)
                 row3.add_spacing(5)
@@ -817,8 +660,6 @@ class MultiEELSPanelDelegate(object):
                 row4.add(auto_dark_subtract_checkbox)
                 row4.add_spacing(20)
                 row4.add(sum_frames_checkbox)
-                #row4.add(saturation_value_label)
-                #row4.add(saturation_value_field)
                 row4.add_spacing(5)
                 row4.add_stretch()
 
@@ -835,18 +676,6 @@ class MultiEELSPanelDelegate(object):
                 self.content.add(column)
                 self.content.add_spacing(5)
 
-                #align_y_checkbox.checked = MultiEELSGUI.MultiEELS.settings['y_align']
-#                auto_dark_subtract_checkbox.checked = MultiEELSGUI.MultiEELS.settings['auto_dark_subtract']
-#                bin_1D_checkbox.checked = MultiEELSGUI.MultiEELS.settings['bin_spectra']
-#                x_shifter_finished('')
-#                y_shifter_finished('')
-#                x_shift_strength_finished('')
-#                y_shift_strength_finished('')
-#                x_shift_delay_finished('')
-#                y_shift_delay_finished('')
-#                saturation_value_finished('')
-
-                #align_y_checkbox.on_check_state_changed = align_y_checkbox_changed
                 auto_dark_subtract_checkbox.on_check_state_changed = auto_dark_subtract_checkbox_changed
                 bin_1D_checkbox.on_check_state_changed = bin_1D_checkbox_changed
                 sum_frames_checkbox.on_check_state_changed = sum_frames_checkbox_changed
@@ -894,57 +723,6 @@ class MultiEELSPanelDelegate(object):
                             self.line_edits[key].text = '{}'.format(str(value))
 
         ConfigDialog(dc.ui, self).show()
-
-#    def show_change_parameters_box(self):
-#        dc = self.document_controller._document_controller
-#
-#        class ConfigDialog(Dialog.ActionDialog):
-#
-#            def __init__(self, ui, MultiEELSGUI):
-#                super(ConfigDialog, self).__init__(ui)
-#                def report_window_close():
-#                    MultiEELSGUI.parameters_window_open = False
-#                self.on_accept = report_window_close
-#                self.on_reject = report_window_close
-#
-#                def add_spectrum_clicked():
-#                    MultiEELSGUI.MultiEELS.add_spectrum()
-#                    column.add(MultiEELSGUI.create_spectrum_parameter_line(MultiEELSGUI.MultiEELS.spectrum_parameters[-1]))
-#
-#                def remove_spectrum_clicked():
-#                    MultiEELSGUI.MultiEELS.remove_spectrum()
-#                    column._widget.remove(column._widget.children[-1])
-#
-#                column = MultiEELSGUI.ui.create_column_widget()
-#                column.add_spacing(5)
-#                for spectrum_parameters in MultiEELSGUI.MultiEELS.spectrum_parameters:
-#                    column.add(MultiEELSGUI.create_spectrum_parameter_line(spectrum_parameters))
-#
-#                row = ui.create_row_widget()
-#                add_spectrum_button = ui.create_push_button_widget('+')
-#                remove_spectrum_button = ui.create_push_button_widget('-')
-#                add_spectrum_button.on_clicked = add_spectrum_clicked
-#                remove_spectrum_button.on_clicked = remove_spectrum_clicked
-#                row.add_spacing(5)
-#                row.add_stretch()
-#                row.add(add_spectrum_button)
-#                row.add_spacing(5)
-#                row.add(remove_spectrum_button)
-#                row.add_spacing(5)
-#                row.add_stretch()
-#
-#                self.content.add_spacing(5)
-#                self.content.add(column._widget)
-#                self.content.add_spacing(5)
-#                self.content.add(row)
-#                self.content.add_spacing(10)
-#
-#            def about_to_close(self, geometry: str, state: str) -> None:
-#                if self.on_reject:
-#                    self.on_reject()
-#                super().about_to_close(geometry, state)
-#
-#        ConfigDialog(dc.ui, self).show()
 
 class MultiEELSExtension(object):
     extension_id = 'nion.extension.multiacquire'

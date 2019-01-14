@@ -97,6 +97,7 @@ class MultiEELS(object):
         self.zeros = {'x': 0, 'y': 0, 'focus': 0}
         self.scan_calibrations = [{'offset': 0, 'scale': 1, 'units': ''}, {'offset': 0, 'scale': 1, 'units': ''}]
         self.__progress_counter = 0
+        self.__flyback_pixels = 0
         self.acquisition_state_changed_event = Event.Event()
         self.new_data_ready_event = Event.Event()
         self.progress_updated_event = Event.Event()
@@ -242,15 +243,14 @@ class MultiEELS(object):
         maximum = 0
         if hasattr(self, 'scan_parameters'):
             scan_size = self.scan_parameters['size']
-            flyback_pixels = self.superscan.flyback_pixels
         else:
             scan_size = (1, 1)
-            flyback_pixels = 0
         for parameters in self.__active_spectrum_parameters:
-            maximum += (scan_size[1] + flyback_pixels) * parameters['frames'] * parameters['exposure_ms']
+            maximum += (scan_size[1] + self.__flyback_pixels) * parameters['frames'] * parameters['exposure_ms']
         maximum *= scan_size[0]
         if self.__active_settings['auto_dark_subtract']:
             maximum *= 2
+        print(0, maximum, self.__progress_counter)
         self.progress_updated_event.fire(0, maximum, self.__progress_counter)
 
     def set_progress_counter(self, minimum, maximum, value):
@@ -360,6 +360,7 @@ class MultiEELS(object):
                      'flyback_pixels': flyback_pixels}
             data_dict = {'data_element': data_element, 'parameters': parms, 'settings': dict(self.__active_settings)}
             self.__queue.put(data_dict)
+            self.__flyback_pixels = flyback_pixels
             self.increment_progress_counter(parameters['frames']*(number_pixels+flyback_pixels)*parameters['exposure_ms'])
             del data_element
             del data_dict
