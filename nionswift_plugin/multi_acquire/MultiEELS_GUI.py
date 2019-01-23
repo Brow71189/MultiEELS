@@ -132,7 +132,7 @@ class MultiEELSPanelDelegate(object):
                 #else:
                 new_data_item = self.document_controller.library.create_data_item_from_data_and_metadata(
                                     xdata,
-                                    title='MultiAcquire #{:d}: {:g}-{:g} eV, {:g}x{:g} ms{}'.format(index+1,
+                                    title='MultiAcquire #{:d}, {:g}-{:g} eV, {:g}x{:g} ms{}'.format(index+1,
                                                                                                     start_ev,
                                                                                                     end_ev,
                                                                                                     number_frames,
@@ -238,7 +238,7 @@ class MultiEELSPanelDelegate(object):
                     data_element['metadata'] = data_dict['parameters']
                     new_xdata = ImportExportManager.convert_data_element_to_data_and_metadata(data_element)
                     title = ('MultiAcquire (stitched)' if data_dict.get('stitched_data') else
-                             'MultiAcquire #{:d}: {:g}-{:g} eV, {:g}x{:g} ms'.format(index+1, start_ev, end_ev,
+                             'MultiAcquire #{:d}, {:g}-{:g} eV, {:g}x{:g} ms'.format(index+1, start_ev, end_ev,
                                                                                      number_frames, exposure_ms))
                     data_item_ready_event = threading.Event()
                     new_data_item = None

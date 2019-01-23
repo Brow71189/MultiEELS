@@ -503,7 +503,7 @@ class MultiEELS(object):
                     data_element['spatial_calibrations'] = spatial_calibrations
                     counts_per_electron = data_element.get('properties', {}).get('counts_per_electron', 1)
                     exposure_ms = data_element.get('properties', {}).get('exposure', 1)
-                    _number_frames = 1 if self.__active_settings['sum_frames'] else number_frames
+                    _number_frames = 1 if not self.__active_settings['sum_frames'] else number_frames
                     intensity_scale = (data_element.get('intensity_calibration', {}).get('scale', 1) /
                                        counts_per_electron /
                                        data_element.get('spatial_calibrations', [{}])[-1].get('scale', 1) /
