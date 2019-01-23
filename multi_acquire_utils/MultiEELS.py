@@ -397,7 +397,12 @@ class MultiEELS(object):
                 self.__queue.join()
                 for i in range(len(self.__active_spectrum_parameters)):
                     dark_data_dict = data_dict_list.pop(len(self.__active_spectrum_parameters))
-                    data_dict_list[i]['data_element']['data'] -= dark_data_dict['data_element']['data']
+                    dark_data = dark_data_dict['data_element']['data']
+                    # if sum_frames is off we take the mean of the dark frames here. The frames axis will be
+                    # the first axis in this case
+                    if not self.__active_settings['sum_frames']:
+                        dark_data = np.mean(dark_data, axis=0)
+                    data_dict_list[i]['data_element']['data'] -= dark_data
         finally:
             self.__acquisition_finished_event.set()
             self.acquisition_state_changed_event.fire({'message': 'end', 'description': 'single spectrum'})
