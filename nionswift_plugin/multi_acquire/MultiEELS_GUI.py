@@ -326,7 +326,8 @@ class MultiEELSPanelDelegate(object):
                 self.show_config_box()
 
         def camera_changed(current_item):
-            self.MultiEELS.settings['camera_hardware_source_id'] = current_item.hardware_source_id
+            if current_item:
+                self.MultiEELS.settings['camera_hardware_source_id'] = current_item.hardware_source_id
 
         camera_choice_row = ui.create_row_widget()
         settings_button = ui.create_push_button_widget('Settings...')
@@ -440,7 +441,8 @@ class MultiEELSPanelDelegate(object):
             if camera.hardware_source_id == current_camera_name:
                 break
         else:
-            self.MultiEELS.settings['camera_hardware_source_id'] = self.camera_choice_combo_box.current_item.hardware_source_id
+            if self.camera_choice_combo_box.current_item:
+                self.MultiEELS.settings['camera_hardware_source_id'] = self.camera_choice_combo_box.current_item.hardware_source_id
             return
         self.camera_choice_combo_box.current_item = camera
 
