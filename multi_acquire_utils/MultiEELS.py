@@ -231,7 +231,7 @@ class MultiEELS(object):
         else:
             scan_size = (1, 1)
         for parameters in self.__active_spectrum_parameters:
-            maximum += (scan_size[1] + self.__flyback_pixels) * parameters['frames'] * parameters['exposure_ms']
+            maximum += (scan_size[1] * parameters['frames'] + self.__flyback_pixels) * parameters['exposure_ms']
         maximum *= scan_size[0]
         if self.__active_settings['auto_dark_subtract']:
             maximum *= 2
@@ -297,36 +297,20 @@ class MultiEELS(object):
             frame_parameters['exposure_ms'] =  parameters['exposure_ms']
             frame_parameters['processing'] = 'sum_processor' if self.__active_settings['bin_spectra'] else None
             self.camera.set_current_frame_parameters(frame_parameters)
-            self.camera.acquire_sequence_prepare(parameters['frames']*(number_pixels+flyback_pixels))
-            success = False
+            self.camera.acquire_sequence_prepare(parameters['frames']*number_pixels+flyback_pixels)
             print('finished preparations in {:g} s'.format(time.time() - starttime))
             starttime = 0
-            # this loop is just there to prevent the acquisition from being aborted when using the simulator
-            while not success:
-                if self.abort_event.is_set():
-                    break
-                try:
-                    print('start sequence')
-                    starttime = time.time()
-                    data_element = self.camera.acquire_sequence(parameters['frames']*(number_pixels+flyback_pixels))
-                    if data_element:
-                        data_element = data_element[0]
-                    print('end sequence in {:g} s'.format(time.time() - starttime))
-                except Exception as e:
-                    if str(e) == 'No simulator thread.':
-                        success = False
-                        print(e)
-                    else:
-                        raise
-                else:
-                    success = True
-
+            print('start sequence')
+            starttime = time.time()
+            data_element = self.camera.acquire_sequence(parameters['frames']*number_pixels+flyback_pixels)
+            if data_element:
+                data_element = data_element[0]
+            print('end sequence in {:g} s'.format(time.time() - starttime))
             if self.abort_event.is_set():
                 break
-
             start_ev = data_element.get('spatial_calibrations', [{}])[-1].get('offset', 0)
             end_ev = start_ev + (data_element.get('spatial_calibrations', [{}])[-1].get('scale', 0) *
-                                               data_element.get('data').shape[-1])
+                                 data_element.get('data').shape[-1])
             parms = {'index': parameters['index'],
                      'exposure_ms': parameters['exposure_ms'],
                      'frames': parameters['frames'],
@@ -337,24 +321,12 @@ class MultiEELS(object):
             data_dict = {'data_element': data_element, 'parameters': parms, 'settings': dict(self.__active_settings)}
             self.__queue.put(data_dict)
             self.__flyback_pixels = flyback_pixels
-            self.increment_progress_counter(parameters['frames']*(number_pixels+flyback_pixels)*parameters['exposure_ms'])
+            self.increment_progress_counter((parameters['frames']*number_pixels+flyback_pixels)*parameters['exposure_ms'])
             del data_element
             del data_dict
             print('finished acquisition')
 
-    def cancel(self):
-        self.abort_event.set()
-        try:
-            self.camera.acquire_sequence_cancel()
-        except:
-            pass
-        # give it some time to finish processing
-        counter = 0
-        while not self.__queue.empty():
-            time.sleep(0.1)
-            if counter > 10:
-                break
-            counter += 1
+    def __clean_up(self):
         # clear the queue to prevent deadlocks
         try:
             while True:
@@ -363,6 +335,28 @@ class MultiEELS(object):
             pass
         else:
             self.__queue.task_done()
+        # call task done again to make sure we can finish
+        try:
+            while True:
+                self.__queue.task_done()
+        except ValueError:
+            pass
+
+    def cancel(self):
+        self.abort_event.set()
+        try:
+            self.camera.acquire_sequence_cancel()
+        except Exception as e:
+            print(e)
+        # give it some time to finish processing
+        counter = 0
+        while not self.__queue.empty():
+            time.sleep(0.1)
+            if counter > 10:
+                break
+            counter += 1
+        # make sure we are in a good state to start again
+        self.__clean_up()
 
     def acquire_multi_eels_spectrum(self):
         try:
@@ -403,13 +397,17 @@ class MultiEELS(object):
                     if not self.__active_settings['sum_frames']:
                         dark_data = np.mean(dark_data, axis=0)
                     data_dict_list[i]['data_element']['data'] -= dark_data
+        except:
+            self.acquisition_state_changed_event.fire({'message': 'exception'})
+            self.__clean_up()
         finally:
+            print('finished acquisition and dark subtraction')
             self.__acquisition_finished_event.set()
             self.acquisition_state_changed_event.fire({'message': 'end', 'description': 'single spectrum'})
-        self.camera.set_current_frame_parameters(start_frame_parameters)
-        self.shift_y(0)
-        self.shift_x(0)
-        self.adjust_focus(0)
+            self.camera.set_current_frame_parameters(start_frame_parameters)
+            self.shift_y(0)
+            self.shift_x(0)
+            self.adjust_focus(0)
         self.__queue.join()
         del new_data_listener
         if self.__active_settings['stitch_spectra']:
@@ -446,9 +444,7 @@ class MultiEELS(object):
                     self.acquisition_state_changed_event.fire({'message': 'end processing'})
                     break
             else:
-
                 print('got data from queue')
-
                 if self.__active_settings['stitch_spectra']:
                     raise NotImplementedError
                     data_dict_list = [data_dict]
@@ -475,12 +471,12 @@ class MultiEELS(object):
                         if len(old_spatial_calibrations) == len(data.shape):
                             old_spatial_calibrations.pop(1)
                         data = np.sum(data, axis=1)
-                    # bring data to universal shape: ('pixels', 'frames', 'data', 'data')
-                    number_frames = data_dict['parameters']['frames']
-                    data = np.reshape(data, (-1, number_frames) + (data.shape[1:]))
                     # remove flyback pixels
                     flyback_pixels = data_dict['parameters']['flyback_pixels']
                     data = data[flyback_pixels:, ...]
+                    # bring data to universal shape: ('pixels', 'frames', 'data', 'data')
+                    number_frames = data_dict['parameters']['frames']
+                    data = np.reshape(data, (-1, number_frames) + (data.shape[1:]))
                     # sum along frames axis
                     if self.__active_settings['sum_frames']:
                         data = np.sum(data, axis=1)
@@ -514,13 +510,15 @@ class MultiEELS(object):
                                        data_element.get('spatial_calibrations', [{}])[-1].get('scale', 1) /
                                        exposure_ms / _number_frames)
                     data_element['intensity_calibration'] = {'offset': 0, 'scale': intensity_scale, 'units': 'e/eV/s'}
-
                     self.new_data_ready_event.fire(data_dict)
                     print('processed line {:.0f}'.format(line_number))
                     del data
                     del data_element
                 del data_dict
-                self.__queue.task_done()
+                try:
+                    self.__queue.task_done()
+                except ValueError:
+                    pass
 
     def acquire_multi_eels_spectrum_image(self):
         self.__active_settings = copy.deepcopy(self.settings)
