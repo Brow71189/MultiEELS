@@ -107,15 +107,16 @@ class MultiEELS(object):
         self.__active_spectrum_parameters = self.spectrum_parameters
         self.abort_event = threading.Event()
         self.__savepath = os.path.join(os.path.expanduser('~'), 'MultiAcquire')
-        os.makedirs(self.__savepath, exist_ok=True)
         self.load_settings()
         self.load_parameters()
         self.__settings_changed_event_listener = self.settings.settings_changed_event.listen(self.save_settings)
         self.__spectrum_parameters_changed_event_listener = self.spectrum_parameters.parameters_changed_event.listen(self.save_parameters)
 
     def save_settings(self):
-        with open(os.path.join(self.__savepath, 'settings.json'), 'w+') as f:
-            json.dump(self.settings, f)
+        if self.__savepath:
+            os.makedirs(self.__savepath, exist_ok=True)
+            with open(os.path.join(self.__savepath, 'settings.json'), 'w+') as f:
+                json.dump(self.settings, f)
 
     def load_settings(self):
         if os.path.isfile(os.path.join(self.__savepath, 'settings.json')):
@@ -123,8 +124,10 @@ class MultiEELS(object):
                 self.settings.update(json.load(f))
 
     def save_parameters(self):
-        with open(os.path.join(self.__savepath, 'spectrum_parameters.json'), 'w+') as f:
-            json.dump(self.spectrum_parameters, f)
+        if self.__savepath:
+            os.makedirs(self.__savepath, exist_ok=True)
+            with open(os.path.join(self.__savepath, 'spectrum_parameters.json'), 'w+') as f:
+                json.dump(self.spectrum_parameters, f)
 
     def load_parameters(self):
         if os.path.isfile(os.path.join(self.__savepath, 'spectrum_parameters.json')):
@@ -359,6 +362,7 @@ class MultiEELS(object):
         self.__clean_up()
 
     def acquire_multi_eels_spectrum(self):
+        start_frame_parameters = None
         try:
             if hasattr(self, 'scan_parameters'):
                 delattr(self, 'scan_parameters')
@@ -400,11 +404,14 @@ class MultiEELS(object):
         except:
             self.acquisition_state_changed_event.fire({'message': 'exception'})
             self.__clean_up()
+            import traceback
+            traceback.print_exc()
         finally:
             print('finished acquisition and dark subtraction')
             self.__acquisition_finished_event.set()
             self.acquisition_state_changed_event.fire({'message': 'end', 'description': 'single spectrum'})
-            self.camera.set_current_frame_parameters(start_frame_parameters)
+            if start_frame_parameters:
+                self.camera.set_current_frame_parameters(start_frame_parameters)
             self.shift_y(0)
             self.shift_x(0)
             self.adjust_focus(0)
