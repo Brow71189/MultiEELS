@@ -3,13 +3,14 @@ import unittest
 import threading
 import copy
 import numpy as np
+#import contextlib
 
 #from nion.swift.model import DocumentModel
 from nion.swift.model import HardwareSource
 #from nion.swift import DocumentController
 from nion.instrumentation import camera_base
 #from nion.instrumentation.test import CameraControl_test
-from nion.utils import Registry
+from nion.utils import Registry, Event
 #from nionswift_plugin.nion_instrumentation_ui import CameraControlPanel
 from nionswift_plugin.usim import CameraDevice
 from nionswift_plugin.usim import InstrumentDevice
@@ -17,6 +18,16 @@ from nionswift_plugin.usim import InstrumentDevice
 from multi_acquire_utils import MultiEELS
 
 class TestMultiAcquire(unittest.TestCase):
+
+    def setUp(self):
+        #self.app = Application.Application(TestUI.UserInterface(), set_global=False)
+        HardwareSource.HardwareSourceManager().hardware_sources = []
+        HardwareSource.HardwareSourceManager().hardware_source_added_event = Event.Event()
+        HardwareSource.HardwareSourceManager().hardware_source_removed_event = Event.Event()
+
+    def tearDown(self):
+        HardwareSource.HardwareSourceManager()._close_hardware_sources()
+        HardwareSource.HardwareSourceManager()._close_instruments()
 
     def _get_stem_controller_and_camera(self, initialize: bool=True, is_eels: bool=False) -> HardwareSource.HardwareSource:
 
@@ -58,8 +69,6 @@ class TestMultiAcquire(unittest.TestCase):
         multi_acquire._MultiEELS__savepath = None
         multi_acquire.settings.update(settings)
         multi_acquire.spectrum_parameters[:] = parameters
-        multi_acquire.stem_controller, multi_acquire.camera = self._get_stem_controller_and_camera()
-
         return multi_acquire
 
     def test_acquire_multi_eels_spectrum_works_and_finishes_in_time(self):
@@ -81,6 +90,7 @@ class TestMultiAcquire(unittest.TestCase):
         total_acquisition_time += settings['x_shift_delay']*2
         total_acquisition_time += settings['blanker_delay']*2 if settings['auto_dark_subtract'] else 0
         multi_acquire = self._set_up_multi_acquire(settings, parameters)
+        multi_acquire.stem_controller, multi_acquire.camera = self._get_stem_controller_and_camera()
         # enable binning for speed
         frame_parameters = multi_acquire.camera.get_current_frame_parameters()
         frame_parameters['binning'] = 8
@@ -90,7 +100,7 @@ class TestMultiAcquire(unittest.TestCase):
             data_dict = multi_acquire.acquire_multi_eels_spectrum()
             self.assertEqual(len(data_dict['data_element_list']), len(parameters))
 
-        thread = threading.Thread(target=run_and_check_result)
+        thread = threading.Thread(target=run_and_check_result, daemon=True)
         def react_to_event(message):
             if message['message'] == 'end' and message['description'] == 'single spectrum':
                 event.set()
