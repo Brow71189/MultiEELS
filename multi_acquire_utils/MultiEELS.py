@@ -298,7 +298,7 @@ class MultiEELS(object):
             self.adjust_focus(parameters['offset_x'])
             frame_parameters = self.camera.get_current_frame_parameters()
             frame_parameters['exposure_ms'] =  parameters['exposure_ms']
-            frame_parameters['processing'] = 'sum_processor' if self.__active_settings['bin_spectra'] else None
+            frame_parameters['processing'] = 'sum_project' if self.__active_settings['bin_spectra'] else None
             self.camera.set_current_frame_parameters(frame_parameters)
             self.camera.acquire_sequence_prepare(parameters['frames']*number_pixels+flyback_pixels)
             print('finished preparations in {:g} s'.format(time.time() - starttime))
