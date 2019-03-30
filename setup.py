@@ -15,13 +15,13 @@ setuptools.setup(
     description="A Nion Swift plug-in to acquire HDR and stitched EELS spectra",
     url="https://github.com/Brow71189/MultiEELS",
     packages=["nionswift_plugin.multi_acquire", "multi_acquire_utils", "multi_acquire_utils.test"],
-    install_requires=['nionswift-instrumentation'],
+    install_requires=['nionswift>=0.14.3', 'nionswift-instrumentation'],
     license='MIT',
     classifiers=[
         "Development Status :: 2 - Pre-Alpha",
-        "Programming Language :: Python :: 3.5",
+        "Programming Language :: Python :: 3.6",
     ],
-    python_requires='~=3.5',
+    python_requires='~=3.6',
     zip_safe=False,
     test_suite="multi_acquire_utils.test"
 )
